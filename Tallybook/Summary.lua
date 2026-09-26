@@ -14,7 +14,11 @@ local Summary = {}
 ns.Summary = Summary
 
 local VISIBLE, ROW_H = 20, 18 -- rows on screen, and the height of one
-local TOP = 88                -- where the rows start, below the title, counts, toggles and column headers
+-- Where the rows start, below the title, counts, the crafts note, toggles and column headers. 106 = the
+-- original 88 plus one row's worth (2026-09-26 UAT fix: the crafts note used to have no line of its own -
+-- see craftsNoteText and where p.craftsNote is anchored, below - and everything from the toggles down
+-- shifted by the same ROW_H to make room for it.
+local TOP = 106
 local WHEEL = 3               -- rows per notch of the mouse wheel
 local CRAFTS = { 1, 5, 10, 20, 50, 100 } -- what the "crafts" button cycles through, for a right-click basket
 -- columns: sort key, header text, left edge, width, alignment, the row's field for it
@@ -368,9 +372,13 @@ local function build(parent)
     end)
     p.craftsButton:SetPoint("TOPRIGHT", p, "TOPRIGHT", -34, -6)
     setText(p.craftsButton, "crafts: " .. string.format("%.0f", CRAFTS[crafts]))
-    p.craftsNote = newLabel(p, "GameFontDisableSmall", "RIGHT")
-    p.craftsNote:SetWidth(220)
-    p.craftsNote:SetPoint("TOPRIGHT", p.craftsButton, "BOTTOMRIGHT", 0, -2)
+    -- 2026-09-26 UAT fix: this used to hang off the crafts button's bottom-right at a fixed 220 width, which
+    -- put it on top of the summary line (p.counts) once that line ran long, and cut its own text off at the
+    -- panel's right edge. Its own full-width line below the summary line instead - never overlaps counts
+    -- (which sits above it) or the toggles (below it, both pushed down by ROW_H - see TOP, above).
+    p.craftsNote = newLabel(p, "GameFontDisableSmall", "LEFT")
+    p.craftsNote:SetWidth(WIDTH - 24)
+    p.craftsNote:SetPoint("TOPLEFT", p.counts, "BOTTOMLEFT", 0, -4)
 
     p.knownToggle = textButton(p, 170, "LEFT", function()
         state.knownOnly = not state.knownOnly
@@ -378,14 +386,14 @@ local function build(parent)
         remember()
         Summary.refresh()
     end)
-    p.knownToggle:SetPoint("TOPLEFT", p, "TOPLEFT", 12, -46)
+    p.knownToggle:SetPoint("TOPLEFT", p, "TOPLEFT", 12, -64)
     p.unknownToggle = textButton(p, 130, "LEFT", function()
         state.hideUnknown = not state.hideUnknown
         state.offset = 0
         remember()
         Summary.refresh()
     end)
-    p.unknownToggle:SetPoint("TOPLEFT", p, "TOPLEFT", 190, -46)
+    p.unknownToggle:SetPoint("TOPLEFT", p, "TOPLEFT", 190, -64)
 
     p.headers = {}
     for i = 1, #COLUMNS do
@@ -400,7 +408,7 @@ local function build(parent)
             remember()
             Summary.refresh()
         end)
-        header:SetPoint("TOPLEFT", p, "TOPLEFT", left, -68)
+        header:SetPoint("TOPLEFT", p, "TOPLEFT", left, -86)
         p.headers[key] = header
     end
 
