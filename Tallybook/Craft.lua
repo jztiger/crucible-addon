@@ -22,6 +22,27 @@ local BASIC = 1  -- Enum.CraftingReagentType.Basic, when the enum is missing
 
 local reading = false
 
+-- Our own item data (2026-09-26): the items this session has already asked the game to load.
+local primed, primedCount = {}, 0
+
+-- Asks the game to load each recipe output and mat it has not got yet: the server answers, the client keeps the row in
+-- its own cache, and the owner's tray sends that cache to the site - so an item nobody has met still gets its exact
+-- tooltip. One ordinary call per item, riding on the click that opened this window; no scan, no timer.
+local function primeItems(ids)
+    if type(C_Item) ~= "table" or type(C_Item.RequestLoadItemDataByID) ~= "function"
+        or type(C_Item.IsItemDataCachedByID) ~= "function" then return end
+    local function cached(id)
+        local ok, yes = pcall(C_Item.IsItemDataCachedByID, id)
+        return ok and yes == true
+    end
+    local list = Logic.itemsToPrime(ids, primed, cached, Logic.PRIME_CAP - primedCount)
+    for i = 1, #list do
+        primed[list[i]] = true
+        primedCount = primedCount + 1
+        pcall(C_Item.RequestLoadItemDataByID, list[i])
+    end
+end
+
 local function basicType()
     local e = type(Enum) == "table" and Enum.CraftingReagentType
     if type(e) == "table" and type(e.Basic) == "number" then return e.Basic end
@@ -209,6 +230,7 @@ function Craft.learnRecipes()
     -- tradeSkillID are whatever recipeProfession DID find - a name with no id yet, or nothing at all - and
     -- ride along so flushPending can apply tiers 3-4 without losing a name it already had (0.9.3).
     local pending = {}
+    local touched = {}
     reading = true
 
     -- Phase 6 (the learned flag): read once, before anything else, exactly like every other per-run decision
@@ -254,6 +276,8 @@ function Craft.learnRecipes()
             if ok then
                 local outputItemID, made, mats, name = readSchematic(schematic)
                 if outputItemID then
+                    touched[#touched + 1] = outputItemID
+                    for m = 1, #(mats or {}) do touched[#touched + 1] = mats[m][1] end
                     local fresh = countNew(db.recipes, outputItemID, recipeID)
                     local profName, skillLine, tradeSkillID = recipeProfession(recipeID)
                     if profName and skillLine then
@@ -291,6 +315,7 @@ function Craft.learnRecipes()
                 end
             end
         end
+        primeItems(touched)
         reading = false
         ns.changed()
         if added > 0 then

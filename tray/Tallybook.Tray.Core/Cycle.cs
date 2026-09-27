@@ -44,6 +44,8 @@ namespace Tallybook.Tray
         public static readonly TimeSpan FetchEvery = TimeSpan.FromMinutes(30);
         /// <summary>An addon version comes out rarely; the check is cheap but there is no point being eager.</summary>
         public static readonly TimeSpan AddonEvery = TimeSpan.FromHours(6);
+        /// <summary>The owner's item cache changes as they play; there is no point sending it more often (spec 2026-09-26).</summary>
+        public static readonly TimeSpan ItemCacheEvery = TimeSpan.FromHours(6);
         /// <summary>The server's own cap on a saved file. A bigger one is not ours.</summary>
         private const long MaxSavedBytes = 64L * 1024 * 1024;
         private static readonly Regex PricesAt = new Regex(@"\bpricesAt = (\d{9,11}),", RegexOptions.CultureInvariant);
@@ -65,6 +67,7 @@ namespace Tallybook.Tray
         private string? addonEtag;
         private DateTime? addonCheckedUtc;
         private bool addonUnsure;
+        private DateTime? itemCacheCheckedUtc;
 
         public DateTime? LastUploadUtc { get; private set; }
         public DateTime? LastFetchUtc { get; private set; }
@@ -143,6 +146,8 @@ namespace Tallybook.Tray
                 log.Write("refused: " + stop + " - stopped until asked again");
                 return Done(report, TrayState.NeedsAttention, "The server refused this PC's credentials");
             }
+
+            await KeepItemCacheSent(now, force).ConfigureAwait(false);
 
             bool due = LastFetchUtc == null || now - LastFetchUtc.Value >= FetchEvery;
             if (config.BringDataBack && (report.Uploaded > 0 || force || due))
@@ -247,6 +252,57 @@ namespace Tallybook.Tray
                 }
             }
             return null;
+        }
+
+        /// <summary>
+        /// Only when the server says this is the owner's install (spec 2026-09-26, decision 6): the item rows of the game's
+        /// own cache, filtered here so nothing else in that file ever leaves this PC. Anything that goes wrong is logged and
+        /// let go - the item cache must never stop the uploads that matter more.
+        /// </summary>
+        private async Task KeepItemCacheSent(DateTime now, bool force)
+        {
+            IReadOnlyList<(string Product, string Path)> files = GameFolders.ItemCacheFiles(config.WowFolder, config.Products);
+            if (files.Count == 0) return;
+            if (!force && itemCacheCheckedUtc != null && now - itemCacheCheckedUtc.Value < ItemCacheEvery) return;
+            itemCacheCheckedUtc = now;
+            if (!await client.ItemCacheWantedAsync().ConfigureAwait(false)) return;
+            foreach ((string product, string path) in files)
+            {
+                byte[]? rows;
+                try
+                {
+                    // The saved-file cap: a bigger DBCache.bin is not one we should be reading at all.
+                    if (new FileInfo(path).Length > MaxSavedBytes)
+                    {
+                        log.Write("the game's item cache for " + product + " is too large to send");
+                        continue;
+                    }
+                    rows = ItemCache.Filter(ReadShared(path));
+                }
+                catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+                {
+                    log.Write("could not read the game's item cache for " + product + ": " + e.GetType().Name);
+                    continue;
+                }
+                if (rows == null) continue; // nothing of the allowed tables in it - not a failure, so silent
+                string sha = "itemcache" + Payload.Sha256Hex(rows); // no separator: SentLog keeps letters and digits only
+                if (sent.Has(sha)) continue;
+                (SendResult result, int _) = await client.SendItemCacheAsync(product, Payload.Gzip(rows)).ConfigureAwait(false);
+                switch (result)
+                {
+                    case SendResult.Sent:
+                        sent.Add(sha);
+                        log.Write("sent the game's item cache for " + product + " (" + rows.Length + " bytes)"); // a checked product name
+                        break;
+                    case SendResult.Rejected:
+                        sent.Add(sha);
+                        log.Write("the server would not take the item cache for " + product + ": " + client.LastError + " - it will not be sent again");
+                        break;
+                    default:
+                        log.Write("the item cache was not taken: " + client.LastError);
+                        break;
+                }
+            }
         }
 
         private IEnumerable<FileInfo> QuietSavedFiles(DateTime now)

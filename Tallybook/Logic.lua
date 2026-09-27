@@ -9,7 +9,7 @@ ns = ns or {}
 local L = {}
 ns.Logic = L
 
-L.VERSION = "0.15.3"
+L.VERSION = "0.16.0"
 -- Two independent version counters, mirroring the server (src/shared/scan-schema.ts SCAN_SCHEMA_VERSION,
 -- src/shared/ref-doc.ts REF_SCHEMA_VERSION): the scan document's shape (replicate, browse) has not changed
 -- since M1, so buildDoc still tags SCAN_SCHEMA; the reference document gained items, suffixes and named
@@ -666,6 +666,23 @@ function L.addRecipe(book, outputItemID, recipeID, qty, mats, name, professionNa
     end
     list[#list + 1] = entry
     return true
+end
+
+-- Our own item data (owner's decision, 2026-09-26): which of a profession's items to ask the game to load - each at
+-- most once a session, only those the client does not hold yet, and never more than `room`. `isCached(id)` answers
+-- from the client. Pure: Craft.lua makes the calls.
+L.PRIME_CAP = 500
+function L.itemsToPrime(ids, primed, isCached, room)
+    local out, seen = {}, {}
+    for i = 1, #ids do
+        if #out >= room then break end
+        local id = ids[i]
+        if type(id) == "number" and id > 0 and id % 1 == 0 and not seen[id] and not primed[id] then
+            seen[id] = true
+            if not isCached(id) then out[#out + 1] = id end
+        end
+    end
+    return out
 end
 
 -- How many entries a table holds. Only used to enforce the item/suffix caps below: their keys (an itemID,

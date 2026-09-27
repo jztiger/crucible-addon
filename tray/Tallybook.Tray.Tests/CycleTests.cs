@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -15,10 +16,23 @@ namespace Tallybook.Tray.Tests
         public readonly FakeServer Server = new FakeServer();
         public readonly TrayConfig Config = ServerClientTests.Config();
         public DateTime Now = new DateTime(2026, 9, 20, 12, 0, 0, DateTimeKind.Utc);
+        public readonly string Product;
         public readonly string Wow;
         public readonly string Saved;
         public readonly string DataLua;
         public readonly string LogFile;
+        /// <summary>What the server answers "is the item cache wanted": true only for the owner's install (spec 2026-09-26).</summary>
+        public bool ItemCacheWanted;
+        /// <summary>What the server answers a POST of the item cache - 200 unless a test sets otherwise (Task 13 review).</summary>
+        public int ItemCacheStatus = 200;
+        public string ItemCache => Path.Combine(Wow, Product, "Cache", "ADB", "enUS", "DBCache.bin");
+        public void SaveItemCache(byte[] bytes)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(ItemCache)!);
+            File.WriteAllBytes(ItemCache, bytes);
+        }
+        public List<FakeServer.Seen> ItemCachePosts() =>
+            Server.Requests.Where(r => r.Method == HttpMethod.Post && r.Url.Contains("/api/v1/item-cache", StringComparison.Ordinal)).ToList();
         public string Lua = ServerClientTests.GoodLua;
         public string AddonVersion = "0.9.0";
         public string AddonETag = "\"addon1\"";
@@ -46,6 +60,7 @@ namespace Tallybook.Tray.Tests
         /// <param name="product">The game's product folder on this pretend PC - renamed at launch, retail on some PCs.</param>
         public World(bool addonInstalled = true, string product = "_classic_beta_")
         {
+            Product = product;
             Wow = Path.Combine(Dir.Path, "World of Warcraft");
             Saved = Path.Combine(Wow, product, "WTF", "Account", "ACCT#1", "SavedVariables", "Tallybook.lua");
             DataLua = Path.Combine(Wow, product, "Interface", "AddOns", "Tallybook", "Data.lua");
@@ -65,6 +80,10 @@ namespace Tallybook.Tray.Tests
             Config.AcceptedNoticeVersion = 2;
             Server.Answer = r =>
             {
+                if (r.Url.Contains("/api/v1/item-cache", StringComparison.Ordinal))
+                    return r.Method == HttpMethod.Get
+                        ? FakeServer.Status(200, ItemCacheWanted ? "{\"wanted\":true}" : "{\"wanted\":false}")
+                        : FakeServer.Status(ItemCacheStatus, "{}");
                 if (r.Url.EndsWith("/api/v1/ingest", StringComparison.Ordinal)) return FakeServer.Status(IngestStatus, "{}", IngestStatus == 429 ? "120" : null);
                 if (r.Url.EndsWith("/api/v1/addon", StringComparison.Ordinal))
                 {
@@ -551,6 +570,121 @@ namespace Tallybook.Tray.Tests
             AtomicFile.Write(f, Encoding.UTF8.GetBytes("two"));
             Assert.Equal("two", File.ReadAllText(f));
             Assert.Single(Directory.GetFiles(dir.Path));
+        }
+    }
+
+    public class ItemCacheCycleTests
+    {
+        private const uint ItemSparse = 0x919BE54E, TactKey = 0xDF2F53CF;
+
+        [Fact]
+        public async Task The_owners_install_sends_only_the_item_rows_gzipped_and_never_the_same_rows_twice()
+        {
+            using var w = new World();
+            w.ItemCacheWanted = true;
+            byte[] cache = Xfth.Cache(70009, (TactKey, 1, 24), (ItemSparse, 1, 10));
+            w.SaveItemCache(cache);
+
+            await w.Cycle.RunAsync(false);
+            List<FakeServer.Seen> posts = w.ItemCachePosts();
+            Assert.Single(posts);
+            Assert.EndsWith("/api/v1/item-cache?product=_classic_beta_", posts[0].Url, StringComparison.Ordinal);
+            Assert.Equal(Payload.Gzip(ItemCache.Filter(cache)!), posts[0].Body);
+
+            await w.Cycle.RunAsync(true); // "Upload now" asks again - the same rows are not sent again
+            Assert.Single(w.ItemCachePosts());
+        }
+
+        [Fact]
+        public async Task A_friends_install_is_not_asked_for_it_and_sends_nothing()
+        {
+            using var w = new World();
+            w.SaveItemCache(Xfth.Cache(70009, (ItemSparse, 1, 10)));
+            await w.Cycle.RunAsync(false);
+            Assert.Equal(1, w.Count("/api/v1/item-cache"));
+            Assert.Empty(w.ItemCachePosts());
+        }
+
+        [Fact]
+        public async Task With_no_cache_on_this_PC_the_server_is_not_even_asked()
+        {
+            using var w = new World();
+            w.ItemCacheWanted = true;
+            await w.Cycle.RunAsync(false);
+            Assert.Equal(0, w.Server.Requests.Count(r => r.Url.Contains("/api/v1/item-cache", StringComparison.Ordinal)));
+        }
+
+        [Fact]
+        public async Task It_asks_again_every_six_hours_not_every_cycle()
+        {
+            using var w = new World();
+            w.SaveItemCache(Xfth.Cache(70009, (ItemSparse, 1, 10)));
+            await w.Cycle.RunAsync(false);
+            w.Now = w.Now.AddHours(1);
+            await w.Cycle.RunAsync(false);
+            Assert.Equal(1, w.Count("/api/v1/item-cache"));
+            w.Now = w.Now.AddHours(6);
+            await w.Cycle.RunAsync(false);
+            Assert.Equal(2, w.Count("/api/v1/item-cache"));
+        }
+
+        [Fact]
+        public async Task The_sent_record_survives_a_restart()
+        {
+            using var w = new World();
+            w.ItemCacheWanted = true;
+            w.SaveItemCache(Xfth.Cache(70009, (ItemSparse, 1, 10)));
+            await w.Cycle.RunAsync(false);
+            Assert.Single(w.ItemCachePosts());
+
+            // As after a restart: a fresh Cycle and a fresh SentLog reading the same sent.txt from disk.
+            w.Cycle = w.NewCycle();
+            await w.Cycle.RunAsync(true);
+            Assert.Single(w.ItemCachePosts());
+        }
+
+        [Fact]
+        public async Task A_cache_the_server_rejects_is_not_sent_again()
+        {
+            using var w = new World();
+            w.ItemCacheWanted = true;
+            w.ItemCacheStatus = 422;
+            w.SaveItemCache(Xfth.Cache(70009, (ItemSparse, 1, 10)));
+            await w.Cycle.RunAsync(false);
+            Assert.Single(w.ItemCachePosts());
+
+            await w.Cycle.RunAsync(true); // "Upload now" asks again - a rejected cache is not retried
+            Assert.Single(w.ItemCachePosts());
+        }
+
+        [Fact]
+        public async Task A_cache_larger_than_the_saved_file_cap_is_skipped_and_logged()
+        {
+            using var w = new World();
+            w.ItemCacheWanted = true;
+            Directory.CreateDirectory(Path.GetDirectoryName(w.ItemCache)!);
+            using (FileStream big = File.Create(w.ItemCache)) { big.SetLength(64L * 1024 * 1024 + 1); }
+
+            await w.Cycle.RunAsync(false);
+
+            Assert.Empty(w.ItemCachePosts());
+            Assert.Contains("too large to send", File.ReadAllText(w.LogFile));
+        }
+
+        [Fact]
+        public async Task A_cache_that_cannot_be_read_is_logged()
+        {
+            using var w = new World();
+            w.ItemCacheWanted = true;
+            w.SaveItemCache(Xfth.Cache(70009, (ItemSparse, 1, 10)));
+
+            using (new FileStream(w.ItemCache, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                await w.Cycle.RunAsync(false);
+            }
+
+            Assert.Empty(w.ItemCachePosts());
+            Assert.Contains("could not read the game's item cache", File.ReadAllText(w.LogFile));
         }
     }
 }

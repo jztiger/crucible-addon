@@ -29,9 +29,10 @@ namespace Tallybook.Tray
     public enum FetchResult { Changed, NotModified, Refused, Failed, Invalid }
 
     /// <summary>
-    /// The three requests this program makes, and no other: send a saved file, fetch the data file, ask which
-    /// version is on offer. Each carries the member's Cloudflare service token, their upload key and an ordinary
-    /// User-Agent - and nothing about the PC. Redirects are never followed.
+    /// The requests this program makes, and no other: send a saved file, fetch the data file, fetch the addon, ask
+    /// which version is on offer - and, on the owner's install only, ask whether the game's item cache is wanted and
+    /// send it. Each carries the member's Cloudflare service token, their upload key and an ordinary User-Agent - and
+    /// nothing about the PC. Redirects are never followed.
     /// </summary>
     public sealed class ServerClient : IDisposable
     {
@@ -57,9 +58,16 @@ namespace Tallybook.Tray
         /// <summary>The handler for real use: no redirects (a login page is a refusal, not a destination), no cookies.</summary>
         public static HttpClientHandler CreateHandler() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false };
 
-        public async Task<(SendResult result, int retryAfterSeconds)> SendAsync(byte[] gzipped)
+        public Task<(SendResult result, int retryAfterSeconds)> SendAsync(byte[] gzipped) =>
+            PostAsync("/api/v1/ingest", gzipped, "upload");
+
+        /// <summary>The owner's item cache (spec 2026-09-26), already cut down by <see cref="ItemCache.Filter"/>, gzipped.</summary>
+        public Task<(SendResult result, int retryAfterSeconds)> SendItemCacheAsync(string product, byte[] gzipped) =>
+            PostAsync("/api/v1/item-cache?product=" + Uri.EscapeDataString(product), gzipped, "item cache");
+
+        private async Task<(SendResult result, int retryAfterSeconds)> PostAsync(string path, byte[] gzipped, string what)
         {
-            using (var request = Request(HttpMethod.Post, "/api/v1/ingest"))
+            using (var request = Request(HttpMethod.Post, path))
             {
                 request.Content = new ByteArrayContent(gzipped);
                 request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
@@ -68,7 +76,7 @@ namespace Tallybook.Tray
                     using (HttpResponseMessage response = await http.SendAsync(request).ConfigureAwait(false))
                     {
                         int status = (int)response.StatusCode;
-                        LastError = status == 200 ? "" : "upload answered " + status;
+                        LastError = status == 200 ? "" : what + " answered " + status;
                         if (status == 200) return (SendResult.Sent, 0);
                         if (status == 400 || status == 413 || status == 422) return (SendResult.Rejected, 0);
                         if (status == 429) return (SendResult.Later, RetryAfter(response));
@@ -78,8 +86,35 @@ namespace Tallybook.Tray
                 }
                 catch (Exception e) when (e is HttpRequestException || e is TaskCanceledException || e is IOException)
                 {
-                    LastError = "upload failed: " + e.GetType().Name;
+                    LastError = what + " failed: " + e.GetType().Name;
                     return (SendResult.Failed, 0);
+                }
+            }
+        }
+
+        [DataContract]
+        private sealed class WantedAnswer
+        {
+            [DataMember(Name = "wanted")] public bool Wanted { get; set; }
+        }
+
+        /// <summary>Whether the server wants this install's item cache - yes only for the owner's. Any failure is "no".</summary>
+        public async Task<bool> ItemCacheWantedAsync()
+        {
+            using (var request = Request(HttpMethod.Get, "/api/v1/item-cache"))
+            {
+                try
+                {
+                    using (HttpResponseMessage response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false))
+                    {
+                        if ((int)response.StatusCode != 200) return false;
+                        byte[]? body = await ReadCapped(response.Content, 4096).ConfigureAwait(false);
+                        return body != null && Json.Read<WantedAnswer>(Encoding.UTF8.GetString(body))?.Wanted == true;
+                    }
+                }
+                catch (Exception e) when (e is HttpRequestException || e is TaskCanceledException || e is IOException)
+                {
+                    return false;
                 }
             }
         }

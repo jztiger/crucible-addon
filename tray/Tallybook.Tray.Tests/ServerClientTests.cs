@@ -229,6 +229,39 @@ namespace Tallybook.Tray.Tests
         {
             Assert.Equal(expected, ServerClient.IsNewer(mine, offered));
         }
+
+        [Fact]
+        public async Task The_item_cache_is_wanted_only_when_the_server_says_so()
+        {
+            var server = new FakeServer { Answer = _ => FakeServer.Status(200, "{\"wanted\":true}") };
+            using var client = new ServerClient(Config(), server);
+            Assert.True(await client.ItemCacheWantedAsync());
+            Assert.Equal("https://tally-api.example.com/api/v1/item-cache", server.Requests[0].Url);
+            Assert.Equal(HttpMethod.Get, server.Requests[0].Method);
+            Assert.Equal("Bearer " + Key, server.Requests[0].Headers["Authorization"]);
+
+            server.Answer = _ => FakeServer.Status(200, "{\"wanted\":false}");
+            Assert.False(await client.ItemCacheWantedAsync());
+            server.Answer = _ => FakeServer.Status(404, "{}");
+            Assert.False(await client.ItemCacheWantedAsync());
+            server.Answer = _ => FakeServer.Status(200, "-- not json");
+            Assert.False(await client.ItemCacheWantedAsync());
+        }
+
+        [Fact]
+        public async Task The_item_cache_goes_to_its_own_route_named_by_its_product_folder()
+        {
+            var server = new FakeServer();
+            using var client = new ServerClient(Config(), server);
+            (SendResult result, int _) = await client.SendItemCacheAsync("_classic_beta_", new byte[] { 1, 2, 3 });
+            Assert.Equal(SendResult.Sent, result);
+            Assert.Equal(HttpMethod.Post, server.Requests[0].Method);
+            Assert.Equal("https://tally-api.example.com/api/v1/item-cache?product=_classic_beta_", server.Requests[0].Url);
+            Assert.Equal(new byte[] { 1, 2, 3 }, server.Requests[0].Body);
+
+            server.Answer = _ => FakeServer.Status(403, "{}");
+            Assert.Equal(SendResult.Refused, (await client.SendItemCacheAsync("_classic_beta_", new byte[] { 1 })).result);
+        }
     }
 
     public class AddonFetchTests

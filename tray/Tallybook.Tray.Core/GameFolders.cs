@@ -6,9 +6,10 @@ namespace Tallybook.Tray
 {
     /// <summary>
     /// The only places this program ever looks, all below the folder the person picked, all by fixed shallow
-    /// patterns - no search, no recursion, no other file name (C4). Looking never creates anything. Every lookup is
-    /// limited to Forever's product folders, as the server listed them (<see cref="ForeverProducts"/>), and each
-    /// listed name is checked again here before it becomes part of a path.
+    /// patterns - no search, no recursion, no other file name (C4); this includes each product folder's own
+    /// &lt;product&gt;\Cache\ADB\enUS\DBCache.bin, the game's item cache. Looking never creates anything. Every
+    /// lookup is limited to Forever's product folders, as the server listed them (<see cref="ForeverProducts"/>),
+    /// and each listed name is checked again here before it becomes part of a path.
     /// </summary>
     public static class GameFolders
     {
@@ -42,6 +43,23 @@ namespace Tallybook.Tray
             {
                 string file = Path.Combine(product, "Interface", "AddOns", "Tallybook", "Data.lua");
                 if (File.Exists(file)) found.Add(file);
+            }
+            return found;
+        }
+
+        public const string ItemCacheName = "DBCache.bin";
+
+        /// <summary>
+        /// &lt;wow&gt;\&lt;product&gt;\Cache\ADB\enUS\DBCache.bin, where it exists, with its product folder's name - one more
+        /// fixed shallow path (spec 2026-09-26), read only when the server says this is the owner's install.
+        /// </summary>
+        public static IReadOnlyList<(string Product, string Path)> ItemCacheFiles(string wow, IReadOnlyList<string> products)
+        {
+            var found = new List<(string Product, string Path)>();
+            foreach (string product in Products(wow, products))
+            {
+                string file = Path.Combine(product, "Cache", "ADB", "enUS", ItemCacheName);
+                if (File.Exists(file)) found.Add((Path.GetFileName(product), file));
             }
             return found;
         }
