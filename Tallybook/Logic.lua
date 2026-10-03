@@ -9,13 +9,14 @@ ns = ns or {}
 local L = {}
 ns.Logic = L
 
-L.VERSION = "0.17.0"
+L.VERSION = "0.18.0"
 -- Two independent version counters, mirroring the server (src/shared/scan-schema.ts SCAN_SCHEMA_VERSION,
 -- src/shared/ref-doc.ts REF_SCHEMA_VERSION): the scan document's shape (replicate, browse) has not changed
 -- since M1, so buildDoc still tags SCAN_SCHEMA; the reference document gained items, suffixes and named
--- recipes in M2 and the member's own sales in M3, so refDoc tags SCHEMA.
+-- recipes in M2, the member's own sales in M3, and (schema 4, review M11/M12/M19) the session's region, realm
+-- and faction, a return's reason and a sale row's multiplicity - so refDoc tags SCHEMA.
 L.SCAN_SCHEMA = 1
-L.SCHEMA = 3
+L.SCHEMA = 4
 L.REPLICATE_COOLDOWN = 900
 -- What the auction house keeps of a sale, in percent. MEASURED at 5 on Forever, 2026-09-22: a sale of
 -- 2100 copper returned 2337 after a 105 copper cut (docs/research/2026-09-22-ah-cut-and-deposit.md).
@@ -41,6 +42,14 @@ L.MAX_NAME_CHARS = 128
 -- M3: the player's own auction outcomes, read from their own mailbox (spec 2026-09-24 section 4). Mirrors
 -- MAX_SALE_ROWS in src/shared/ref-doc.ts; one session's mailbox is never remotely this large.
 L.MAX_SALE_ROWS = 5000
+-- Schema 4 (review M11): how many mails of one inbox reading one sale row may stand for. Mirrors MAX_SALE_TIMES
+-- in src/shared/ref-doc.ts; the client's inbox never holds this many.
+L.MAX_SALE_TIMES = 100
+-- The server's sale fold, mirrored so Mail.lua can keep one mail to one row (a test holds them together): two
+-- expiry minutes this far apart may be one mail (SALE_MATCH_TOLERANCE_S in src/server/ingest/reference.ts), and
+-- a stale inbox snapshot is at most this old (SNAPSHOT_FOLD_WINDOW_S there).
+L.SALE_MATCH_TOLERANCE = 60
+L.SNAPSHOT_FOLD_WINDOW = 86400
 -- Roll briefs, section B (addon 0.13.0): a suffixed roll's own green bonus lines, read once per (item,
 -- suffix) per session from the item's tooltip. Mirrors MAX_BONUS_LINES / MAX_BONUS_LINE_CHARS in
 -- src/shared/ref-doc.ts, the server-side backstop for the same two caps.
@@ -53,6 +62,8 @@ L.MAX_BONUS_LINE_CHARS = 64
 L.MAX_KNOWN_ROWS = 64
 L.MAX_KNOWN_RECIPE_IDS = 2000
 local OUTCOMES = { sold = true, returned = true }
+-- Schema 4 (review M19): why a returned auction came back, from the mail's own subject.
+local REASONS = { expired = true, cancelled = true }
 
 -- The server refuses any number that is not a safe integer (2^53 - 1).
 local MAX_SAFE = 9007199254740991
@@ -779,31 +790,93 @@ end
 -- fractional number of days: kept as the row's 9th element when it is a real number in 0..31 (the server's
 -- bound) and simply left off otherwise - never a reason to refuse the row. It is not part of the key.
 --
+-- Schema 4: reason (optional, review M19) is "expired" or "cancelled" on a returned row - part of the key, since
+-- an expiry and a cancel are never the same mail - and left off a sold row or when it is anything else. times
+-- (optional, review M11) is how many mails of one inbox reading this row stands for - Mail.lua owns the number
+-- and SETS it, held at MAX_SALE_TIMES; a call with no times leaves a recorded row's alone. Neither is ever a
+-- reason to refuse the row. Both are stored the way the document row carries them (ref-doc.ts SaleExtras): one
+-- small table as the row's LAST element, only when there is something in it - so a row stays a plain array.
+--
 -- DEDUP: this API gives a mail no id, so the same mail seen on two visits - or in two sessions - has to
 -- collapse to one row. What does not change while a mail sits in the box is its expiry, which was fixed when
 -- the auction was posted: itemName, count, price, expiry and outcome together identify one mail. Mail.lua
 -- rounds the expiry to the minute so that counting down between visits does not make a second row. Two
--- identical sales mailed within the same minute collapse into one; that is stated in the spec (section 9)
--- and the count field keeps stack totals honest. The server's UNIQUE index is the real guard across
--- sessions; this only keeps one document from carrying the same mail twice.
--- -> true when recorded
+-- identical sales mailed within the same minute share the key; since schema 4 (review M11) the row's `times`
+-- says how many of them one inbox reading showed, rather than collapsing them into one. The server's UNIQUE
+-- index is the real guard across sessions; this only keeps one document from carrying the same mail twice.
+-- -> true when recorded, or when an already recorded row's times changed
 local function isDaysLeft(v)
     return type(v) == "number" and v == v and v >= 0 and v <= 31
 end
 
-function L.noteSale(db, itemID, itemName, count, price, deposit, cut, outcome, expiresAt, daysLeft)
+-- A returned row's reason when it is one we know; nil otherwise (and always on a sold row).
+local function saleReason(outcome, reason)
+    if outcome == "returned" and type(reason) == "string" and REASONS[reason] then return reason end
+    return nil
+end
+
+-- The dedup key noteSale files a row under (see DEDUP above). Mail.lua asks for it to find a row it replaces.
+function L.saleKey(itemName, count, price, expiresAt, outcome, reason)
+    local key = tostring(itemName) .. ":" .. string.format("%d", count) .. ":" .. string.format("%d", price)
+        .. ":" .. string.format("%d", expiresAt) .. ":" .. tostring(outcome)
+    local why = saleReason(outcome, reason)
+    if why then key = key .. ":" .. why end
+    return key
+end
+
+-- A stored row's schema-4 extras ({ reason, times }): its last element when that is a table, else nil.
+function L.saleExtras(row)
+    if type(row) ~= "table" or #row < 9 then return nil end
+    local last = row[#row]
+    if type(last) == "table" then return last end
+    return nil
+end
+
+function L.noteSale(db, itemID, itemName, count, price, deposit, cut, outcome, expiresAt, daysLeft, reason, times)
     if type(db) ~= "table" or type(db.sales) ~= "table" then return false end
     if not isCount(itemID, 0) or not validName(itemName) or not isCount(count, 1) then return false end
     if not isCount(price, 0) or not isCount(deposit, 0) or not isCount(cut, 0) then return false end
     if not OUTCOMES[outcome] or not isCount(expiresAt, 1) then return false end
-    local key = itemName .. ":" .. string.format("%d", count) .. ":" .. string.format("%d", price)
-        .. ":" .. string.format("%d", expiresAt) .. ":" .. outcome
-    if db.sales[key] ~= nil then return false end
+    if times ~= nil and not isCount(times, 1) then return false end
+    if times ~= nil and times > L.MAX_SALE_TIMES then times = L.MAX_SALE_TIMES end
+    local key = L.saleKey(itemName, count, price, expiresAt, outcome, reason)
+    local row = db.sales[key]
+    if row ~= nil then
+        if times == nil or type(row) ~= "table" then return false end
+        local extras = L.saleExtras(row)
+        local had = extras and isCount(extras.times, 2) and extras.times or 1
+        if had == times then return false end
+        if times >= 2 then
+            if not extras then
+                extras = {}
+                row[#row + 1] = extras
+            end
+            extras.times = times
+        elseif extras then
+            extras.times = nil
+            if extras.reason == nil then row[#row] = nil end -- nothing left in it: no extras at all
+        end
+        return true
+    end
     db.saleCount = db.saleCount or tableSize(db.sales) -- see L.noteItem
     if db.saleCount >= L.MAX_SALE_ROWS then return false end
-    db.sales[key] = { itemID, itemName, count, price, deposit, cut, outcome, expiresAt }
-    if isDaysLeft(daysLeft) then db.sales[key][9] = daysLeft end
+    row = { itemID, itemName, count, price, deposit, cut, outcome, expiresAt }
+    if isDaysLeft(daysLeft) then row[9] = daysLeft end
+    local why = saleReason(outcome, reason)
+    local many = times ~= nil and times >= 2 and times or nil
+    if why or many then row[#row + 1] = { reason = why, times = many } end
+    db.sales[key] = row
     db.saleCount = db.saleCount + 1
+    return true
+end
+
+-- Takes one row out (Mail.lua: a stale reading that a fresher one of the same mail replaced). -> true when it
+-- was there.
+function L.dropSale(db, key)
+    if type(db) ~= "table" or type(db.sales) ~= "table" or db.sales[key] == nil then return false end
+    db.saleCount = db.saleCount or tableSize(db.sales)
+    db.sales[key] = nil
+    db.saleCount = db.saleCount - 1
     return true
 end
 
@@ -1116,7 +1189,13 @@ end
 -- names existed stays in db.recipes for this session's own Crafting Cost, but is left out here rather than
 -- sent as a v1-shaped row - it is relearned, with its name, the next time its profession window opens,
 -- which is the same moment it would have been sent anyway.
-function L.refDoc(db, at)
+--
+-- home (optional, schema 4, review M12) is ns.meta() - the session's region, realm and faction, which name the
+-- house this document's sales were made in. All three ride at the document's top level, or none of them: the
+-- realm as the scan document would carry it (L.metaProblem's rules), the faction one of the three the scan
+-- document allows, the region a whole number (0 when the client cannot say, as the scan document sends it). A
+-- realm is not a player (C11). On its own it is not something to tell: with nothing else, still nil.
+function L.refDoc(db, at, home)
     if type(db) ~= "table" then return nil end
     local vendor, recipes = {}, {}
     if type(db.vendor) == "table" then
@@ -1199,18 +1278,33 @@ function L.refDoc(db, at)
                 and isCount(s[8], 1) then
                 local row = { s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8] }
                 if isDaysLeft(s[9]) then row[9] = s[9] end -- D16 fix round 1: the raw daysLeft, when there is one
+                -- Schema 4: the extras ride LAST, only when there is something in them (an empty table would
+                -- serialise as [] or {} - the server refuses both).
+                local extras, any = {}, false
+                local stored = L.saleExtras(s) or {}
+                local reason = saleReason(s[7], stored.reason)
+                if reason then extras.reason, any = reason, true end
+                if isCount(stored.times, 2) and stored.times <= L.MAX_SALE_TIMES then
+                    extras.times, any = stored.times, true
+                end
+                if any then row[#row + 1] = extras end
                 sales[#sales + 1] = row
             end
         end
-        -- Expiry then name is the order the document promises; outcome, count and price break the rest of
-        -- the ties, because together with those two they ARE the dedup key - so no two rows can compare
-        -- equal, and pairs() order above can never reach the output.
+        -- Expiry then name is the order the document promises; outcome, count, price and a return's reason
+        -- break the rest of the ties, because together with those two they ARE the dedup key - so no two rows
+        -- can compare equal, and pairs() order above can never reach the output.
+        local function why(row)
+            local last = row[#row]
+            return type(last) == "table" and last.reason or ""
+        end
         table.sort(sales, function(a, b)
             if a[8] ~= b[8] then return a[8] < b[8] end
             if a[2] ~= b[2] then return a[2] < b[2] end
             if a[7] ~= b[7] then return a[7] < b[7] end
             if a[3] ~= b[3] then return a[3] < b[3] end
-            return a[4] < b[4]
+            if a[4] ~= b[4] then return a[4] < b[4] end
+            return why(a) < why(b)
         end)
     end
     -- Phase 6: which recipes this session's character knows, and that profession's skill rank
@@ -1260,19 +1354,23 @@ function L.refDoc(db, at)
     if #sales > 0 then doc.sales = sales end
     if #known > 0 then doc.known = known end
     if shoppingDone then doc.shoppingDone = shoppingDone end
+    if type(home) == "table" and type(home.realm) == "string" and home.realm ~= "" and #home.realm <= 64
+        and FACTIONS[home.faction] and (home.region == nil or isCount(home.region, 0)) then
+        doc.region, doc.realm, doc.faction = countOr0(home.region), home.realm, home.faction
+    end
     return doc
 end
 
--- -> "r3:<b64>"   (its own tag: the scan extractor on the server only ever looks for "j1:" and "end:")
+-- -> "r4:<b64>"   (its own tag: the scan extractor on the server only ever looks for "j1:" and "end:")
 function L.refTag(b64)
-    return "r3:" .. tostring(b64)
+    return "r4:" .. tostring(b64)
 end
 
--- "r3:<b64>" -> b64 ; anything else -> nil. This client only ever writes r3 now (the server still reads an
--- r1 or r2 from an addon that has not updated, but Export.saveRef only ever checks its OWN tag right back).
+-- "r4:<b64>" -> b64 ; anything else -> nil. This client only ever writes r4 now (the server still reads an
+-- r2 or r3 from an addon that has not updated, but Export.saveRef only ever checks its OWN tag right back).
 function L.refOf(text)
     if type(text) ~= "string" then return nil end
-    return string.match(text, "^r3:([A-Za-z0-9+/=]+)$")
+    return string.match(text, "^r4:([A-Za-z0-9+/=]+)$")
 end
 
 -- Whole numbers from one id -> value table, copied. -> the copy, how many
@@ -1353,7 +1451,44 @@ function L.applyBaked(db, baked, now)
     -- beats throwing away a good one over a corrupt file.
     if type(baked.market) == "table" then db.market = cleanCounts(baked.market, 1) end
     if type(baked.sells) == "table" then db.sells = cleanCounts(baked.sells, 0) end
+    -- M1 / M87: when the market values were worked out, and how many days this market has been scanned. Present
+    -- replaces, absent keeps - the same rule as the tables above. Not a whole number is no figure at all.
+    if isCount(baked.statsAt, 1) then db.statsAt = baked.statsAt end
+    if isCount(baked.marketAgeDays, 0) then db.marketAgeDays = baked.marketAgeDays end
+    -- M84: this member's own newest full scan, from the server. Saved state never survives a client restart, so
+    -- without this the 15-minute guard was void after every launch. The LATER of the two wins: a scan made this
+    -- session (or a saved copy that did survive) is never moved back.
+    if isCount(baked.lastFullScanAt, 1) and baked.lastFullScanAt > db.state.lastReplicateAt then
+        db.state.lastReplicateAt = baked.lastFullScanAt
+    end
     return vendorAdded, recipesAdded, adoptPrices(db, baked, now)
+end
+
+-- M87: days of scans a market needs before the server can work out a market value.
+L.MARKET_VALUE_DAYS = 3
+
+-- True when the game has no file from the tray at all: the empty Data.lua the addon ships with. A file the server
+-- built always carries a build time, a market table or auction prices, even for a member with nothing yet.
+function L.noTrayData(baked)
+    if type(baked) ~= "table" then return true end
+    if isCount(baked.builtAt, 1) or type(baked.market) == "table" or isCount(baked.pricesAt, 1) then return false end
+    return true
+end
+
+-- -> how old the market values are in seconds, and whether that is past PRICES_MAX_AGE; nil when the file did not
+-- say (an older file, the local bake) or the clock is unknown or behind it. Unknown is never 0.
+function L.marketValueAge(db, now)
+    if type(db) ~= "table" or not isCount(db.statsAt, 1) or not isCount(now, 1) or now < db.statsAt then return nil end
+    local age = now - db.statsAt
+    return age, age > L.PRICES_MAX_AGE
+end
+
+-- True when this market has no market values yet BECAUSE it is young: the file's table is empty and the market's
+-- first scan is under MARKET_VALUE_DAYS old. An unknown market age is not "not yet".
+function L.marketNotYet(db)
+    if type(db) ~= "table" or type(db.market) ~= "table" then return false end
+    for _ in pairs(db.market) do return false end
+    return isCount(db.marketAgeDays, 0) and db.marketAgeDays < L.MARKET_VALUE_DAYS
 end
 
 ---------------------------------------------------------------------------------------------------

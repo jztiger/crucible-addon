@@ -1,6 +1,6 @@
 # Tallybook
 
-A small, read-only auction house notebook for the World of Warcraft: Forever beta.
+A small, read-only auction house notebook for World of Warcraft: Forever.
 
 - **Lowest now** on item tooltips, from your own last price scan.
 - **Craft cost** for anything you can craft: every mat with its price (vendor price when a vendor sells it), and the
@@ -19,7 +19,8 @@ A small, read-only auction house notebook for the World of Warcraft: Forever bet
 
 ## Install
 
-Copy the `Tallybook` folder into `World of Warcraft\_classic_beta_\Interface\AddOns\`, start the game, and type `/tally`.
+Copy the `Tallybook` folder into `Interface\AddOns\` inside your Forever folder (the folder in `World of Warcraft`
+whose name looks like `_something_`), start the game, and type `/tally`.
 
 Open the auction house and Tallybook scans it once, by itself (or press **Full scan** for a full snapshot); open a
 profession window and it learns your recipes. Nothing to type either way.
@@ -88,10 +89,13 @@ panel never disagree.
 
 Optional. A small Windows program (C#, .NET Framework 4.8) for members of our group: it sends the addon's saved file to
 the group's private server and writes one shared `Data.lua` back into the addon's folder, so the game has prices without
-scanning. It reads `Tallybook.lua` / `Tallybook.lua.bak` under the World of Warcraft folder **you** pick, writes that one
-`Data.lua`, and touches nothing else: it does not look at the game while it runs, find or scan anything by itself, update
-itself, or run without its tray icon. `shared/risk-notice.txt` is what every member reads before downloading it. It is
-useless without a membership - the server is private - but the source is here so anyone can read what it does.
+scanning. It also installs the addon and replaces it when a new version is published (a switch in its Settings turns
+that off). It reads `Tallybook.lua` / `Tallybook.lua.bak` under the World of Warcraft folder **you** pick and writes only
+inside the addon's own folder. On the owner's install alone, and only because the server asks for it there, it also
+sends the item rows of the game's own item cache (`DBCache.bin`); nobody else's copy reads that file. It does not look at
+the game while it runs, search for anything, update itself, or run without its tray icon. `shared/risk-notice.txt` is
+what every member reads before downloading it. It is useless without a membership - the server is private - but the
+source is here so anyone can read what it does.
 Build: `dotnet build tray/Tallybook.Tray -c Release`; tests: `dotnet test tray/Tallybook.Tray.Tests`.
 
 ## About this repository

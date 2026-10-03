@@ -79,7 +79,7 @@ namespace Tallybook.Tray.Tests
             Assert.Equal("Bearer " + Key, r.Headers["Authorization"]);
             Assert.Equal(AppInfo.UserAgent, r.Headers["User-Agent"]);
             Assert.Equal("application/octet-stream", r.Headers["Content-Type"]);
-            var allowed = new[] { "CF-Access-Client-Id", "CF-Access-Client-Secret", "Authorization", "User-Agent", "Content-Type", "Content-Length", "Accept" };
+            var allowed = new[] { "CF-Access-Client-Id", "CF-Access-Client-Secret", "Authorization", "User-Agent", "Content-Type", "Content-Length", "Accept", ServerClient.NoticeHeader };
             Assert.DoesNotContain(r.Headers.Keys, k => !allowed.Contains(k, StringComparer.OrdinalIgnoreCase));
             string machine = Environment.MachineName, user = Environment.UserName;
             foreach (string v in r.Headers.Values)
@@ -87,6 +87,37 @@ namespace Tallybook.Tray.Tests
                 if (machine.Length > 2) Assert.DoesNotContain(machine, v, StringComparison.OrdinalIgnoreCase);
                 if (user.Length > 2) Assert.DoesNotContain(user, v, StringComparison.OrdinalIgnoreCase);
             }
+        }
+
+        /// <summary>
+        /// M124: the notice version the person accepted rides every request, so the server can show it on Your PCs.
+        /// It is a small number and nothing else - never a name, never the notice's text.
+        /// </summary>
+        [Fact]
+        public async Task Every_request_says_which_notice_version_was_accepted()
+        {
+            var server = new FakeServer();
+            TrayConfig config = Config();
+            config.AcceptedNoticeVersion = 4;
+            var client = new ServerClient(config, server);
+
+            await client.SendAsync(new byte[] { 1 });
+            await client.SendItemCacheAsync("_classic_beta_", new byte[] { 1 });
+            await client.ItemCacheWantedAsync();
+            await client.FetchDataFileAsync(null);
+            await client.FetchAddonAsync(null);
+            await client.LatestVersionAsync();
+
+            Assert.Equal(6, server.Requests.Count);
+            Assert.All(server.Requests, r => Assert.Equal("4", r.Headers["X-Tallybook-Notice"]));
+        }
+
+        [Fact]
+        public async Task With_no_notice_accepted_the_header_is_not_sent_at_all()
+        {
+            var server = new FakeServer();
+            await new ServerClient(Config(), server).SendAsync(new byte[] { 1 });
+            Assert.False(Assert.Single(server.Requests).Headers.ContainsKey("X-Tallybook-Notice"));
         }
 
         [Theory]

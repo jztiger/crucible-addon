@@ -19,6 +19,13 @@ namespace Tallybook.Tray
             Match m = Regex.Match(noticeText ?? "", @"^Tallybook notice, version ([0-9]{1,4})\s*$", RegexOptions.Multiline | RegexOptions.CultureInvariant);
             return m.Success && int.TryParse(m.Groups[1].Value, out int v) ? v : 0;
         }
+
+        /// <summary>
+        /// Whether "I understand" stands for the notice this build carries: only when they accepted this version or a
+        /// later one. An older acceptance is not carried over to words they have not read (M124).
+        /// </summary>
+        public static bool IsAccepted(int acceptedVersion, int currentVersion) =>
+            currentVersion > 0 && acceptedVersion >= currentVersion;
     }
 
 /// <summary>One file of the addon, as the server sends it: a plain name, its SHA-256, and its text.</summary>

@@ -93,12 +93,20 @@ function UI.marketLine(itemID)
     if ns.isSecret(itemID) or type(itemID) ~= "number" then return nil end
     local db = TallybookDB
     if type(db) ~= "table" or type(db.market) ~= "table" then return nil end
+    -- M87: a market scanned for under 3 days has no values at all yet; say why, rather than nothing.
+    if Logic.marketNotYet(db) then return MARKET_LABEL .. "not yet - needs " .. Logic.MARKET_VALUE_DAYS .. " days of scans" end
     local value = db.market[itemID]
     if type(value) ~= "number" or value <= 0 then return nil end
     local line = MARKET_LABEL .. money(value)
     local sells = type(db.sells) == "table" and db.sells[itemID] or nil
     if type(sells) == "number" and sells >= 0 then
         line = line .. " · sells ~" .. perDay(sells / 100) .. " a day"
+    end
+    -- M1: how old that value is, as the lowest-now line shows its own; orange once past PRICES_MAX_AGE.
+    local age, stale = Logic.marketValueAge(db, ns.serverTime())
+    if age then
+        local text = "(" .. Logic.formatAge(age) .. ")"
+        line = line .. " " .. (stale and ("|cffff8000" .. text .. "|r") or text)
     end
     return line
 end

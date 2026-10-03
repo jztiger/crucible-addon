@@ -118,14 +118,15 @@ function Export.save(doc)
 end
 
 -- What the addon has learned that never changes (vendor prices, recipes) -> TallybookDB.ref, one
--- "r1:<base64 JSON>" string, rebuilt from scratch each time. Called when the client is about to write the
+-- "r4:<base64 JSON>" string (Logic.refTag), rebuilt from scratch each time. Called when the client is about to write the
 -- saved file (logout, /tally reload), so it says nothing: there is nobody left to read it. The bake step
 -- (src/shared/ref-doc.ts, bake.ts) turns these strings into Data.lua. -> true when a string was stored
 function Export.saveRef()
     local db = ns.db()
     db.ref = nil
     if not Export.available() then return false end
-    local doc = Logic.refDoc(db, ns.serverTime())
+    -- Schema 4 (review M12): the session's region, realm and faction name the house its sales were made in.
+    local doc = Logic.refDoc(db, ns.serverTime(), ns.meta())
     if not doc then return false end
     local E = C_EncodingUtil
     local okJson, json = pcall(E.SerializeJSON, doc)

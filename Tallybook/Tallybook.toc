@@ -1,8 +1,8 @@
 ## Interface: 16001
 ## Title: Tallybook
-## Notes: Auction house price notebook. Read-only: never posts, bids, buys or cancels. Scans only when you ask.
+## Notes: Auction house price notebook. Read-only: never posts, bids, buys or cancels. Runs one quick scan when you open the auction house (untick auto-scan to stop it).
 ## Author: jztiger
-## Version: 0.17.0
+## Version: 0.18.0
 ## SavedVariables: TallybookDB
 
 Logic.lua

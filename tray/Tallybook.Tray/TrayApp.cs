@@ -21,6 +21,8 @@ namespace Tallybook.Tray
         private readonly ServerClient client;
         private readonly Cycle cycle;
         private readonly NotifyIcon icon;
+        /// <summary>M112: whether a newer tray app is on offer, and whether its one balloon is due.</summary>
+        private readonly UpdateNudge nudge;
         private readonly ToolStripMenuItem pauseItem = new ToolStripMenuItem("Pause");
         private readonly ToolStripMenuItem updateItem = new ToolStripMenuItem("") { Visible = false };
         /// <summary>What is installed, at the top of the menu: the tooltip has no room for it.</summary>
@@ -31,6 +33,8 @@ namespace Tallybook.Tray
         private DateTime versionCheckedUtc = DateTime.MinValue;
         private TrayState state = TrayState.Ok;
         private string reason = "";
+        /// <summary>Which balloon is up: a click on the update one opens the download page.</summary>
+        private bool balloonIsUpdate;
 
         public TrayApp(TrayConfig config, ISecretProtector protector, TrayLog log)
         {
@@ -39,6 +43,7 @@ namespace Tallybook.Tray
             this.log = log;
             client = new ServerClient(config, ServerClient.CreateHandler());
             cycle = new Cycle(config, client, new SentLog(Paths.Sent), new Stability(), log, () => DateTime.UtcNow);
+            nudge = new UpdateNudge(AppInfo.Version, config.NudgedVersion);
 
             var menu = new ContextMenuStrip();
             menu.Items.Add(whatIsHere);
@@ -54,10 +59,11 @@ namespace Tallybook.Tray
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Quit", null, (s, e) => Quit());
             pauseItem.Click += (s, e) => TogglePause();
-            updateItem.Click += (s, e) => OpenWebsite();
+            updateItem.Click += (s, e) => OpenDownloadPage();
 
             icon = new NotifyIcon { ContextMenuStrip = menu, Icon = Icons.For(config.Paused ? TrayState.Paused : TrayState.Ok), Text = "Tallybook", Visible = true };
             icon.DoubleClick += (s, e) => OpenWebsite();
+            icon.BalloonTipClicked += (s, e) => { if (balloonIsUpdate) OpenDownloadPage(); };
             if (!icon.Visible) throw new InvalidOperationException("the tray icon could not be shown");
 
             Show(config.Paused ? TrayState.Paused : TrayState.Ok, "");
@@ -78,18 +84,29 @@ namespace Tallybook.Tray
                 CycleReport report = await Task.Run(() => cycle.RunAsync(force));
                 Show(report.State, report.Reason);
                 if (report.ProductsChanged) Save(); // the last list the server sent, for the next start and for offline
-                if (report.AddonInstalled != null) icon.ShowBalloonTip(5000, AppInfo.Name, "The Tallybook addon is now version " + report.AddonInstalled + ".", ToolTipIcon.Info);
+                if (report.AddonInstalled != null)
+                {
+                    balloonIsUpdate = false;
+                    icon.ShowBalloonTip(5000, AppInfo.Name, "The Tallybook addon is now version " + report.AddonInstalled + ".", ToolTipIcon.Info);
+                }
 
                 if (!config.Paused && DateTime.UtcNow - versionCheckedUtc > TimeSpan.FromHours(24))
                 {
                     versionCheckedUtc = DateTime.UtcNow;
                     string? offered = await Task.Run(() => client.LatestVersionAsync());
-                    if (ServerClient.IsNewer(AppInfo.Version, offered))
+                    // Shown, never fetched (M112, C3): the person downloads it from the website themselves.
+                    bool balloon = nudge.Offer(offered);
+                    updateItem.Text = nudge.MenuText ?? "";
+                    updateItem.Visible = nudge.Available != null;
+                    if (balloon)
                     {
-                        // Shown, never fetched: the person downloads it from the website themselves.
-                        updateItem.Text = "Version " + offered + " is available - open the website";
-                        updateItem.Visible = true;
+                        config.NudgedVersion = nudge.Nudged ?? "";
+                        Save(); // once per new version, across restarts too
+                        balloonIsUpdate = true;
+                        icon.ShowBalloonTip(10000, AppInfo.Name, nudge.BalloonText ?? "", ToolTipIcon.Info);
+                        log.Write("tray " + nudge.Available + " is on offer"); // a checked version number: safe to log
                     }
+                    Show(state, reason); // the tooltip's first line and the badge
                 }
             }
             catch (Exception e)
@@ -107,32 +124,12 @@ namespace Tallybook.Tray
         {
             state = newState;
             reason = newReason;
-            icon.Icon = Icons.For(state);
+            // M112: a newer tray app on offer adds a badge to whatever colour the state is.
+            icon.Icon = Icons.For(state, nudge.Available != null);
             pauseItem.Text = config.Paused ? "Resume" : "Pause";
             string? addon = AddonVersionHere();
             whatIsHere.Text = "Tallybook " + AppInfo.Version + (addon == null ? "" : "  ·  addon " + addon);
-
-            string text;
-            if (state == TrayState.Ok)
-            {
-                text = "Tallybook - up to date";
-                if (cycle.LastUploadUtc != null) text += ". Sent " + Ago(cycle.LastUploadUtc.Value);
-                if (cycle.PricesAtUtc != null) text += "; prices " + Ago(cycle.PricesAtUtc.Value);
-            }
-            else
-            {
-                text = "Tallybook - " + reason;
-            }
-            icon.Text = text.Length > 63 ? text.Substring(0, 62) + "…" : text; // Windows allows 63 characters
-        }
-
-        private static string Ago(DateTime utc)
-        {
-            TimeSpan t = DateTime.UtcNow - utc;
-            if (t.TotalMinutes < 1) return "just now";
-            if (t.TotalHours < 1) return (int)t.TotalMinutes + "m ago";
-            if (t.TotalDays < 1) return (int)t.TotalHours + "h ago";
-            return (int)t.TotalDays + "d ago";
+            icon.Text = TrayText.Tooltip(state, reason, cycle.LastUploadUtc, cycle.PricesAtUtc, nudge.TooltipLine, DateTime.UtcNow);
         }
 
         private void TogglePause()
@@ -177,6 +174,9 @@ namespace Tallybook.Tray
         }
 
         private void OpenWebsite() { Start(config.Ui); }
+
+        /// <summary>The website's download page, from the person's own settings file - never an address the server sent.</summary>
+        private void OpenDownloadPage() { Start(UpdateNudge.DownloadPage(config.Ui)); }
 
         private void OpenLog()
         {

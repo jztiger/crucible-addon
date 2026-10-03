@@ -173,18 +173,53 @@ namespace Tallybook.Tray.Tests
             Assert.Equal(2, r.Uploaded);
         }
 
+        /// <summary>
+        /// A file the server will never take (400, 413, 422) is not sent again - and the icon says so in yellow, with its
+        /// own words, instead of a green "up to date" over a scan that never arrived. A later file going through clears it.
+        /// </summary>
         [Fact]
-        public async Task A_rejected_file_is_not_sent_again()
+        public async Task A_rejected_file_is_not_sent_again_and_stays_yellow_with_its_own_words_until_a_file_goes_through()
         {
+            const string words = "The server turned down a saved file - see the log";
             using var w = new World { IngestStatus = 422 };
             w.Save("not a saved file");
             CycleReport r = await w.RunUntilStable();
             Assert.Equal(0, r.Uploaded);
             Assert.Equal(1, r.Rejected);
-            Assert.Equal(TrayState.Ok, r.State);
+            Assert.Equal(TrayState.Retrying, r.State);
+            Assert.Equal(words, r.Reason);
+            Assert.Equal(1, w.Count("/datafile")); // the rest of the pass went on as usual
+
             w.Now = w.Now.AddMinutes(5);
-            await w.Cycle.RunAsync(false);
+            CycleReport later = await w.Cycle.RunAsync(false);
             Assert.Equal(1, w.Count("/ingest"));
+            Assert.Equal(TrayState.Retrying, later.State);
+            Assert.Equal(words, later.Reason);
+            Assert.Equal(words, (await w.Cycle.RunAsync(true)).Reason); // "Upload now" sends nothing new, so it stays
+
+            w.IngestStatus = 200;
+            w.Save("TallybookDB = { one = 1 }");
+            CycleReport ok = await w.RunUntilStable();
+            Assert.Equal(1, ok.Uploaded);
+            Assert.Equal(TrayState.Ok, ok.State);
+        }
+
+        /// <summary>A Data.lua that cannot be written is not "Cannot reach the server" - the server was reached fine.</summary>
+        [Fact]
+        public async Task A_data_lua_that_cannot_be_written_says_so_and_keeps_saying_so_while_it_waits()
+        {
+            const string words = "Cannot write Data.lua - trying again soon";
+            using var w = new World();
+            // The temp file beside it cannot be made, so the write fails - on Windows and Linux alike.
+            Directory.CreateDirectory(w.DataLua + AtomicFile.TempSuffix);
+            CycleReport r = await w.Cycle.RunAsync(false);
+            Assert.Equal(TrayState.Retrying, r.State);
+            Assert.Equal(words, r.Reason);
+
+            w.Now = w.Now.AddSeconds(2); // inside the back-off: nothing is tried, and the words do not change
+            CycleReport waiting = await w.Cycle.RunAsync(false);
+            Assert.Equal(TrayState.Retrying, waiting.State);
+            Assert.Equal(words, waiting.Reason);
         }
 
         [Fact]
@@ -212,11 +247,13 @@ namespace Tallybook.Tray.Tests
         {
             using var w = new World { IngestStatus = 500 };
             w.Save("TallybookDB = { one = 1 }");
-            Assert.Equal(TrayState.Retrying, (await w.RunUntilStable()).State);
+            CycleReport failed = await w.RunUntilStable();
+            Assert.Equal(TrayState.Retrying, failed.State);
+            Assert.Equal("Cannot reach the server - trying again soon", failed.Reason);
             Assert.Equal(1, w.Count("/ingest"));
 
             w.Now = w.Now.AddSeconds(2);
-            await w.Cycle.RunAsync(false);
+            Assert.Equal("Cannot reach the server - trying again soon", (await w.Cycle.RunAsync(false)).Reason);
             Assert.Equal(1, w.Count("/ingest")); // still inside the 5 s back-off
 
             w.Now = w.Now.AddSeconds(4);
@@ -305,7 +342,12 @@ namespace Tallybook.Tray.Tests
             CycleReport r = await w.Cycle.RunAsync(false);
             Assert.Equal(0, r.Wrote);
             Assert.Equal(TrayState.Retrying, r.State);
+            // The server answered - just not with our file - so not "Cannot reach the server" (tray G3).
+            Assert.Equal("The data file looked wrong - trying again soon", r.Reason);
             Assert.Equal(before, File.ReadAllText(w.DataLua));
+
+            w.Now = w.Now.AddSeconds(2);
+            Assert.Equal("The data file looked wrong - trying again soon", (await w.Cycle.RunAsync(false)).Reason);
         }
 
         [Fact]

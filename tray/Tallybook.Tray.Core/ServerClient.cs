@@ -31,8 +31,8 @@ namespace Tallybook.Tray
     /// <summary>
     /// The requests this program makes, and no other: send a saved file, fetch the data file, fetch the addon, ask
     /// which version is on offer - and, on the owner's install only, ask whether the game's item cache is wanted and
-    /// send it. Each carries the member's Cloudflare service token, their upload key and an ordinary User-Agent - and
-    /// nothing about the PC. Redirects are never followed.
+    /// send it. Each carries the member's Cloudflare service token, their upload key, an ordinary User-Agent and the
+    /// number of the notice they accepted - and nothing about the PC. Redirects are never followed.
     /// </summary>
     public sealed class ServerClient : IDisposable
     {
@@ -40,6 +40,8 @@ namespace Tallybook.Tray
         public const int MaxDataFileBytes = 8 * 1024 * 1024;
         /// <summary>The manifest's own cap, with room for JSON's quoting on top of the addon's byte limit.</summary>
         public const int MaxAddonBytes = 16 * 1024 * 1024;
+        /// <summary>The notice version the person accepted (<see cref="TrayConfig.AcceptedNoticeVersion"/>), on every request.</summary>
+        public const string NoticeHeader = "X-Tallybook-Notice";
         private const int DefaultRetryAfter = 60;
         private const int LongestRetryAfter = 86400;
 
@@ -240,6 +242,9 @@ namespace Tallybook.Tray
             request.Headers.TryAddWithoutValidation("CF-Access-Client-Secret", config.ClientSecret);
             request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + config.UploadKey);
             request.Headers.TryAddWithoutValidation("User-Agent", AppInfo.UserAgent);
+            // M124: which notice the person accepted, so the website can show it. A small number and nothing else.
+            if (config.AcceptedNoticeVersion > 0)
+                request.Headers.TryAddWithoutValidation(NoticeHeader, config.AcceptedNoticeVersion.ToString(System.Globalization.CultureInfo.InvariantCulture));
             return request;
         }
 

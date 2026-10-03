@@ -12,7 +12,11 @@ namespace Tallybook.Tray
     {
         /// <summary>Green: nothing waiting, nothing wrong.</summary>
         Ok,
-        /// <summary>Yellow: the server could not be reached, or asked us to wait. It will try again by itself.</summary>
+        /// <summary>
+        /// Yellow: something that may pass, each with its own words - the server could not be reached or asked us to
+        /// wait, Data.lua could not be written, or the data file looked wrong (all tried again by itself); or the server
+        /// turned down a saved file, which stays yellow until a later file goes through.
+        /// </summary>
         Retrying,
         /// <summary>Red: it will not fix itself - the folder is gone, or the credentials are refused.</summary>
         NeedsAttention,
@@ -50,6 +54,12 @@ namespace Tallybook.Tray
         private const long MaxSavedBytes = 64L * 1024 * 1024;
         private static readonly Regex PricesAt = new Regex(@"\bpricesAt = (\d{9,11}),", RegexOptions.CultureInvariant);
 
+        // The yellow states' words (tray G3): each says what actually happened. The tooltip has room for about 50.
+        public const string CannotReach = "Cannot reach the server - trying again soon";
+        public const string CannotWriteData = "Cannot write Data.lua - trying again soon";
+        public const string BadDataFile = "The data file looked wrong - trying again soon";
+        public const string FileTurnedDown = "The server turned down a saved file - see the log";
+
         private readonly TrayConfig config;
         private readonly ServerClient client;
         private readonly SentLog sent;
@@ -61,6 +71,10 @@ namespace Tallybook.Tray
             new Dictionary<string, (long, DateTime, string)>(StringComparer.OrdinalIgnoreCase);
 
         private DateTime notBeforeUtc = DateTime.MinValue;
+        /// <summary>Why we are waiting: the words of the pass that set <see cref="notBeforeUtc"/>, said again until it passes.</summary>
+        private string waitWords = CannotReach;
+        /// <summary>The server turned down a saved file (400, 413, 422) and none has gone through since.</summary>
+        private bool turnedDown;
         private bool refused;
         private string? etag;
         private byte[]? lastLua;
@@ -100,7 +114,7 @@ namespace Tallybook.Tray
                 notBeforeUtc = DateTime.MinValue;
             }
             if (refused) return Done(report, TrayState.NeedsAttention, "The server refused this PC's credentials");
-            if (now < notBeforeUtc) return Done(report, TrayState.Retrying, "Cannot reach the server - trying again soon");
+            if (now < notBeforeUtc) return Done(report, TrayState.Retrying, waitWords);
 
             foreach (FileInfo file in QuietSavedFiles(now))
             {
@@ -117,12 +131,14 @@ namespace Tallybook.Tray
                 {
                     case SendResult.Sent:
                         sent.Add(sha);
+                        turnedDown = false;
                         report.Uploaded++;
                         LastUploadUtc = now;
                         log.Write("sent " + what);
                         break;
                     case SendResult.Rejected:
                         sent.Add(sha);
+                        turnedDown = true;
                         report.Rejected++;
                         log.Write("the server would not take " + what + ": " + client.LastError + " - it will not be sent again");
                         break;
@@ -168,14 +184,19 @@ namespace Tallybook.Tray
                         refused = true;
                         log.Write("refused: " + client.LastError + " - stopped until asked again");
                         return Done(report, TrayState.NeedsAttention, "The server refused this PC's credentials");
+                    case FetchResult.Invalid:
+                        // The server answered - just not with our file (a proxy's page, say).
+                        return Wait(report, now, backoff.Next(), client.LastError, BadDataFile);
                     default:
                         return Wait(report, now, backoff.Next(), client.LastError);
                 }
-                if (lastLua != null && !PutInPlace(lastLua, report)) return Wait(report, now, backoff.Next(), "Data.lua could not be written");
+                if (lastLua != null && !PutInPlace(lastLua, report))
+                    return Wait(report, now, backoff.Next(), "Data.lua could not be written", CannotWriteData);
             }
 
             backoff.Reset();
-            return report;
+            // Not green over a scan that never arrived: yellow until a later file goes through (the log says which).
+            return turnedDown ? Done(report, TrayState.Retrying, FileTurnedDown) : report;
         }
 
         /// <summary>
@@ -371,11 +392,12 @@ namespace Tallybook.Tray
             }
         }
 
-        private CycleReport Wait(CycleReport report, DateTime now, TimeSpan wait, string why)
+        private CycleReport Wait(CycleReport report, DateTime now, TimeSpan wait, string why, string words = CannotReach)
         {
             notBeforeUtc = now + wait;
+            waitWords = words;
             log.Write("waiting " + (int)wait.TotalSeconds + " s: " + why);
-            return Done(report, TrayState.Retrying, "Cannot reach the server - trying again soon");
+            return Done(report, TrayState.Retrying, words);
         }
 
         private static CycleReport Done(CycleReport report, TrayState state, string reason)

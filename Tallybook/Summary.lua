@@ -253,6 +253,9 @@ local function textButton(parent, width, justify, onClick)
     return button
 end
 
+-- M87: the tray hint is the header's for the first time the panel is opened this session, and only then.
+local trayHintDone, trayHintOpen = false, false
+
 local function paint()
     if not panel then return end
     local db = TallybookDB
@@ -264,10 +267,17 @@ local function paint()
         end
     end
     if hasPrices then
-        panel.title:SetText(professionName() .. " - prices from " .. Logic.formatAge(ns.serverTime() - db.pricesAt) .. " ago"
-            .. ns.UI.priceSource(" (", ")"))
+        local title = professionName() .. " - prices from " .. Logic.formatAge(ns.serverTime() - db.pricesAt) .. " ago"
+            .. ns.UI.priceSource(" (", ")")
+        -- M1: the market value has an age of its own, and a week-old pooled value must not look fresh.
+        local age = Logic.marketValueAge(db, ns.serverTime())
+        if age then title = title .. " - market value " .. Logic.formatAge(age) .. " old" end
+        panel.title:SetText(title)
     else
-        panel.title:SetText(professionName() .. " - no AH prices yet: Quick scan at the auction house")
+        local title = professionName() .. " - no AH prices yet: Quick scan at the auction house"
+        -- M87: a member with no tray file hears once per session what brings shared prices (see Summary.toggle).
+        if trayHintOpen and Logic.noTrayData(ns.baked) then title = title .. " - shared prices arrive with the tray app" end
+        panel.title:SetText(title)
     end
 
     local last = math.max(0, #current - VISIBLE)
@@ -517,6 +527,10 @@ function Summary.toggle()
         return
     end
     panel:SetShown(not panel:IsShown())
+    if panel:IsShown() then
+        trayHintOpen = not trayHintDone
+        trayHintDone = true
+    end
     choices().offset = 0
     Summary.refresh()
 end

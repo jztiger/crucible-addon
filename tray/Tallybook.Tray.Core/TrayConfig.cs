@@ -22,6 +22,8 @@ namespace Tallybook.Tray
         /// <summary>Which version of the notice they accepted. 0 means they have not seen one.</summary>
         public int AcceptedNoticeVersion { get; set; }
         public bool Paused { get; set; }
+        /// <summary>The tray version the last "update available" balloon was for (M112), so it is shown once; "" for none.</summary>
+        public string NudgedVersion { get; set; } = "";
         /// <summary>
         /// Forever's product folders: the last list the server sent, so this works offline too. Replaced whole,
         /// never changed in place - a pass reads it on another thread.

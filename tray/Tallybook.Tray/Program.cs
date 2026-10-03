@@ -202,9 +202,10 @@ namespace Tallybook.Tray
                 using (new ServerClient(new TrayConfig { Api = "https://a.example.com" }, handler)) return !handler.AllowAutoRedirect;
             });
             Check("gzip", () => Payload.Gzip(Encoding.UTF8.GetBytes(new string('x', 10000))).Length < 200);
-            Check("the four tray icons draw", () =>
+            Check("the four tray icons draw, with and without the update badge", () =>
             {
-                foreach (TrayState s in new[] { TrayState.Ok, TrayState.Retrying, TrayState.NeedsAttention, TrayState.Paused }) if (Icons.For(s).Width <= 0) return false;
+                foreach (TrayState s in new[] { TrayState.Ok, TrayState.Retrying, TrayState.NeedsAttention, TrayState.Paused })
+                    if (Icons.For(s).Width <= 0 || Icons.For(s, true).Width <= 0) return false;
                 return true;
             });
             Check("the risk notice is inside, and carries a version", () =>

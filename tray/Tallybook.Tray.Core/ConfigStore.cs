@@ -31,6 +31,7 @@ namespace Tallybook.Tray
             [DataMember(Name = "acceptedNoticeVersion", Order = 11, EmitDefaultValue = false)] public int? AcceptedNoticeVersion { get; set; }
             [DataMember(Name = "paused", Order = 10, EmitDefaultValue = false)] public bool? Paused { get; set; }
             [DataMember(Name = "products", Order = 13, EmitDefaultValue = false)] public List<string?>? Products { get; set; }
+            [DataMember(Name = "updateNudged", Order = 14, EmitDefaultValue = false)] public string? UpdateNudged { get; set; }
         }
 
         /// <summary>The server's tallybook.config.json. Null when it is not a complete one.</summary>
@@ -79,6 +80,7 @@ namespace Tallybook.Tray
                 AcceptedNoticeVersion = c.AcceptedNoticeVersion,
                 Paused = c.Paused,
                 Products = new List<string?>(c.Products),
+                UpdateNudged = c.NudgedVersion.Length == 0 ? null : c.NudgedVersion,
             };
             string? dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
@@ -119,6 +121,8 @@ namespace Tallybook.Tray
             Paused = s.Paused ?? false,
             // A file from before the list has none; a hand-edited one may hold names that must never become paths.
             Products = ForeverProducts.Choose(ForeverProducts.Default, s.Products),
+            // Only ever shown and compared, but a hand-edited file may hold anything: what is not a version is none.
+            NudgedVersion = UpdateNudge.IsVersion(s.UpdateNudged) ? s.UpdateNudged! : "",
         };
 
         private static string? Open(string? stored, ISecretProtector protector)

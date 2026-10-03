@@ -1,8 +1,10 @@
 -- Tallybook: namespace, events, saved state and the /tally slash command.
 --
 -- Rules this file keeps (docs/decisions.md C7, C11):
---   * Nothing here starts a scan or a reload by itself. Events only keep state up to date; every
---     scan and the reload start from a typed /tally command.
+--   * Nothing here starts a scan or a reload by itself. Events only keep state up to date. A scan
+--     starts from a /tally command or a click on the auction house strip - or is the one quick scan
+--     Strip.lua runs when the player opens the auction house (C7 as revised 2026-09-23; its limits
+--     live there). The reload starts from /tally reload or a click on a Sync button.
 --   * The one UI reload in the whole addon is inside the "/tally reload" handler below.
 --   * Saved state may be missing at load - it does not survive a full client restart on this
 --     client - so an absent or damaged TallybookDB is normal and is rebuilt without complaint.

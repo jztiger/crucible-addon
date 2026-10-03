@@ -202,6 +202,21 @@ namespace Tallybook.Tray.Tests
             Assert.Equal(expected, Notice.VersionOf(text));
         }
 
+        /// <summary>
+        /// M124: somebody who accepted version 3 meets version 4 with the box UNticked - one OK must not carry an old
+        /// "I understand" over to words they have not read. Settings, after accepting the current one, shows it ticked.
+        /// </summary>
+        [Theory]
+        [InlineData(0, 4, false)]
+        [InlineData(3, 4, false)]
+        [InlineData(4, 4, true)]
+        [InlineData(5, 4, true)]
+        [InlineData(1, 0, false)] // a build with no readable notice never counts as accepted
+        public void The_box_is_ticked_only_for_the_current_notice_or_a_later_one(int accepted, int current, bool ticked)
+        {
+            Assert.Equal(ticked, Notice.IsAccepted(accepted, current));
+        }
+
         [Fact]
         public void Keeping_the_addon_up_to_date_defaults_to_on_and_survives_a_round_trip()
         {

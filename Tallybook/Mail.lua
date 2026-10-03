@@ -18,7 +18,7 @@
 --   * Every client function is feature-detected and called under pcall, and every value that comes back is
 --     checked with ns.isSecret before it is used, exactly as Scan.lua and Craft.lua do.
 --
--- What is read lands in TallybookDB.sales (Logic.noteSale, which owns the dedup rule); it leaves in the
+-- What is read lands in TallybookDB.sales (Logic.noteSale, which owns the dedup key); it leaves in the
 -- reference document on the next Sync or /tally reload, like everything else.
 --
 -- M72: a member who switched "Record my sales" off on Your PCs gets captureSales = false in their own Data.lua
@@ -29,6 +29,15 @@
 -- hint while something is waiting. It is a click, and it calls the same ns.reload as /tally reload and the
 -- strip's Sync (Core.lua) - the one place the UI is ever reloaded. Nothing else here is new: no timer, no
 -- mail action, and the button does nothing until somebody presses it.
+--
+-- Review M11/M19 (reference document schema 4): ONE ROW PER MAIL PER SESSION, and a return says why it came
+-- back. The server counts the rows of one document that fold together as DIFFERENT mails (sale.times,
+-- src/server/ingest/reference.ts MULTIPLICITY), so this file must never write one mail twice in a session -
+-- see "readings" below for how a mail is told apart from its own later readings, and from a stale one.
+-- "Record on the first MAIL_INBOX_UPDATE after MAIL_SHOW" is realised by those rules, not by special-casing
+-- an event: MAIL_SHOW's walk is the EARLY reading (whatever snapshot the client had cached - kept, because
+-- another mail addon's OpenAll can take a mail before the update ever shows it, review M44), the first update
+-- after it is the client's fresh fetch, and a fresh reading of a mail supersedes a stale one.
 
 local _, ns = ...
 local Logic = ns.Logic
@@ -41,8 +50,13 @@ ns.Mail = Mail
 -- e.g. "Auction cancelled: %s"), used only when one ends in %s so the part before it is a plain prefix;
 -- then the English subjects in both spellings as fallbacks. The owner's UAT (2026-09-24) found Forever
 -- writing "Auction canceled: " with ONE L, which the 0.10.0 list did not have, so no cancelled auction was
--- ever captured.
-local FALLBACK_PREFIXES = { "Auction expired: ", "Auction cancelled: ", "Auction canceled: " }
+-- ever captured. Review M19: each prefix also says WHY the auction came back - a cancel is the player's
+-- choice, an expiry a failed sale - and the row carries it.
+local FALLBACK_PREFIXES = {
+    { "Auction expired: ", "expired" },
+    { "Auction cancelled: ", "cancelled" },
+    { "Auction canceled: ", "cancelled" },
+}
 -- The invoice type the game gives the OTHER side of a sale - the person who bought it. Everything else is
 -- the player's own sale-side invoice. Tested this way round on purpose: the word for the other type is one
 -- the compliance test bans from the addon's code, and nothing here needs it.
@@ -61,25 +75,26 @@ local function clientPrefix(format)
     return string.sub(format, 1, -3)
 end
 
--- The client's prefixes first, then the fallbacks. Read on every walk rather than once at load: the globals
--- are the client's, and reading two of them costs nothing.
+-- The client's prefixes first, then the fallbacks, each with its reason. Read on every walk rather than once
+-- at load: the globals are the client's, and reading two of them costs nothing.
 local function returnPrefixes()
     local list = {}
     local removed, expired = clientPrefix(AUCTION_REMOVED_MAIL_SUBJECT), clientPrefix(AUCTION_EXPIRED_MAIL_SUBJECT)
-    if removed then list[#list + 1] = removed end
-    if expired then list[#list + 1] = expired end
+    if removed then list[#list + 1] = { removed, "cancelled" } end
+    if expired then list[#list + 1] = { expired, "expired" } end
     for i = 1, #FALLBACK_PREFIXES do list[#list + 1] = FALLBACK_PREFIXES[i] end
     return list
 end
 
--- The item's name out of "Auction expired: Linen Cloth", or nil when this is not a returned auction.
+-- The item's name and why it came back, out of "Auction expired: Linen Cloth", or nil when this is not a
+-- returned auction.
 local function returnedName(subject, prefixes)
     if ns.isSecret(subject) or type(subject) ~= "string" then return nil end
     for i = 1, #prefixes do
-        local prefix = prefixes[i]
+        local prefix, reason = prefixes[i][1], prefixes[i][2]
         if string.sub(subject, 1, #prefix) == prefix then
             local name = string.sub(subject, #prefix + 1)
-            if #name >= 1 and #name <= Logic.MAX_NAME_CHARS then return name end
+            if #name >= 1 and #name <= Logic.MAX_NAME_CHARS then return name, reason end
         end
     end
     return nil
@@ -113,42 +128,6 @@ local function header(index)
     return subject, daysLeft
 end
 
--- 0.11.0 (D16): the mail's expiry as a unix second rounded DOWN to the minute, one per READING.
---
--- daysLeft is not a live countdown: it is a snapshot from the client's last fetch of the inbox, so reading
--- the same snapshot twice minutes apart gave now + daysLeft two different answers - the owner opened the
--- mailbox twice about 4 minutes apart and every sale became two rows exactly 240 s apart. So the first
--- expiry computed for a reading is kept for the session and reused for an identical one: the same mail
--- (outcome, name, count, price) with the same daysLeft. The last key is the NUMBER, a nested table keyed
--- by it - never tostring, which rounds to 14 digits and would let two different readings share a key. A
--- fresh fetch changes daysLeft, so it is computed anew, and lands on the same minute as long as the
--- countdown is honest (the server's +-60 s match covers a boundary). The open case - a stale snapshot
--- read first and a fresh one later - still lands as far apart as the snapshot was old; see the test
--- marked OPEN in addon/tests/logic.test.ts. Session state only: a reload starts it empty - and since the
--- client keeps its inbox cache across a reload, the same stale snapshot then comes back with the identical
--- daysLeft, which is why each row also carries that raw number (Logic.noteSale): the server folds a
--- re-read of one snapshot by it (fix round 1, src/server/ingest/reference.ts).
-local readings = {}
-
-local function expiryFor(outcome, name, count, price, daysLeft, now)
-    local node = readings
-    local path = { outcome, name, count, price }
-    for i = 1, #path do
-        local child = node[path[i]]
-        if child == nil then
-            child = {}
-            node[path[i]] = child
-        end
-        node = child
-    end
-    local known = node[daysLeft]
-    if known ~= nil then return known end
-    local expiresAt = math.floor((now + daysLeft * 86400) / 60) * 60
-    if not isWholeSecond(expiresAt) then return nil end
-    node[daysLeft] = expiresAt
-    return expiresAt
-end
-
 -- A whole number of at least 1, from a value the client handed back; nil otherwise.
 local function positiveWhole(v)
     if ns.isSecret(v) or type(v) ~= "number" or v ~= v or v < 1 or v >= 4294967296 then return nil end
@@ -176,66 +155,286 @@ local function attachment(index)
     return id, positiveWhole(count) or 1
 end
 
--- One mail -> one sale, one return, or nothing at all. -> true when a row was recorded.
+-- One mail -> what it says, or nil when it is not one of the player's own auction outcomes:
+--   { outcome, name, count, price, deposit, cut, itemID, reason, days, minute, raw }
+-- `days` is daysLeft exactly as the client gave it; `raw` is the moment it says the mail expires, by THIS
+-- reading's clock (now + daysLeft), and `minute` that moment rounded DOWN to the minute - the expiry a NEW
+-- reading of this mail would be filed under (see readings below for when it is not new).
 --
 -- GetInboxInvoiceInfo's returns, from a live /dump on Forever (2026-09-24) with one sold auction in the box:
 --   invoiceType, itemName, <the other party>, bid, buyout, deposit, consignment, moneyDelay, etaHour,
 --   etaMin, count, itemID
 -- On that client [3] came back "" and [12] false - the invoice names no item, so the row travels by name and
 -- the server matches it. [4] bid is the amount the player received and [7] consignment is the house's cut.
-local function readMail(db, index, now, prefixes)
+local function readMail(index, now, prefixes)
     local subject, daysLeft = header(index)
-    if daysLeft == nil then return false end
+    if daysLeft == nil then return nil end
+    local raw = now + daysLeft * 86400
+    local minute = math.floor(raw / 60) * 60
+    if not isWholeSecond(minute) then return nil end
+    local m = { days = daysLeft, raw = raw, minute = minute }
 
     if type(GetInboxInvoiceInfo) == "function" then
         local ok, invoiceType, itemName, _, bid, _, deposit, consignment, _, _, _, count, itemID =
             pcall(GetInboxInvoiceInfo, index)
         if ok and not ns.isSecret(invoiceType) and type(invoiceType) == "string" then
             -- A mail with an invoice is an auction house mail either way; whether it is OURS is the type.
-            if invoiceType == BUYER then return false end
-            if ns.isSecret(itemName) or type(itemName) ~= "string" then return false end
-            if ns.isSecret(bid) or type(bid) ~= "number" or bid ~= bid then return false end
+            if invoiceType == BUYER then return nil end
+            if ns.isSecret(itemName) or type(itemName) ~= "string" then return nil end
+            if ns.isSecret(bid) or type(bid) ~= "number" or bid ~= bid then return nil end
             if ns.isSecret(deposit) or type(deposit) ~= "number" then deposit = 0 end
             if ns.isSecret(consignment) or type(consignment) ~= "number" then consignment = 0 end
             if ns.isSecret(count) or type(count) ~= "number" or count < 1 then count = 1 end
             if ns.isSecret(itemID) or type(itemID) ~= "number" then itemID = 0 end
-            count, bid = math.floor(count), math.floor(bid)
-            local expiresAt = expiryFor("sold", itemName, count, bid, daysLeft, now)
-            if expiresAt == nil then return false end
-            return Logic.noteSale(db, math.floor(itemID), itemName, count, bid,
-                math.floor(deposit), math.floor(consignment), "sold", expiresAt, daysLeft)
+            m.outcome, m.name, m.count, m.price = "sold", itemName, math.floor(count), math.floor(bid)
+            m.deposit, m.cut, m.itemID = math.floor(deposit), math.floor(consignment), math.floor(itemID)
+            return m
         end
     end
 
     -- No invoice: an auction that expired or was cancelled, which the subject says and the item proves.
     -- Nothing comes back but the item, so there is no price and the deposit is not returned either.
-    local name = returnedName(subject, prefixes)
-    if not name then return false end
+    local name, reason = returnedName(subject, prefixes)
+    if not name then return nil end
     local itemID, count = attachment(index)
-    local expiresAt = expiryFor("returned", name, count, 0, daysLeft, now)
-    if expiresAt == nil then return false end
-    return Logic.noteSale(db, itemID, name, count, 0, 0, 0, "returned", expiresAt, daysLeft)
+    m.outcome, m.name, m.count, m.price, m.deposit, m.cut = "returned", name, count, 0, 0, 0
+    m.itemID, m.reason = itemID, reason
+    return m
+end
+
+---------------------------------------------------------------------------------------------------
+-- Readings: one row per mail per session (review M11; 0.11.0 D16 before it)
+---------------------------------------------------------------------------------------------------
+--
+-- This API gives a mail no id, and daysLeft is not a live countdown: it is a snapshot from the client's last
+-- fetch of the inbox, so `now + daysLeft` drifts by however old that snapshot is (the owner opened the mailbox
+-- twice about 4 minutes apart and every sale became two rows exactly 240 s apart). So the session keeps, per
+-- mail IDENTITY (outcome, name, count, price and a return's reason), the mails it has read: each one's expiry
+-- minute (its row's key), every exact daysLeft value it has been read with (the key into it is the NUMBER,
+-- never tostring, which rounds to 14 digits), and how many mails of one reading it stands for (`n`, the row's
+-- `times`: identical mails in one walk - a buyer who took two identical stacks at once - share one row).
+--
+-- Each walk of the inbox settles every mail it reads, in this order, against the mails already known:
+--   1. THE SAME READING: its exact daysLeft is one a known mail was read with - the same snapshot read again,
+--      however long ago (D16). Its expiry is reused.
+--   2. THE SAME MAIL, COUNTED DOWN: a fresh snapshot whose expiry minute is within the server's own one-bucket
+--      match (Logic.SALE_MATCH_TOLERANCE) of a known mail with room for it - an honest countdown, give or take
+--      the second of jitter that crosses a minute boundary. Its first expiry is kept: one mail, one row.
+--   3. A STALE READING SUPERSEDED: what is left, against known mails nothing in this walk has claimed, whose
+--      expiry is more than that match and at most a day (Logic.SNAPSHOT_FOLD_WINDOW) LATER - the earlier
+--      reading's daysLeft moved more than the clock did, so it was stale by the difference. The fresher reading
+--      wins: the stale one stands for that many fewer mails, and its row goes when it stands for none. A mail
+--      the fresh reading no longer shows (taken in between, M44) keeps its early row.
+--   4. NEW: anything still left is a mail not seen before - filed at its own minute, or, when a known mail of
+--      the same identity already sits on that minute, counted into it (multiplicity).
+-- Steps 1 and 2 come first, one known mail to as many readings as it stands for, so that a DIFFERENT mail of
+-- the same item with more time left - which looks exactly like a stale reading of this one - is claimed by its
+-- own reading before step 3 could ever take it. A row's `n` only grows by what one walk sees at once; a later
+-- walk seeing fewer (one collected) never lowers it - only step 3 does.
+--
+-- Session state only: a reload starts it empty, and it picks up the rows TallybookDB.sales still holds (the
+-- first session after an install, when saved data does read back), each as one known mail. When saved data
+-- did not come back, neither did the rows: the next document carries a re-read with the same raw daysLeft, and
+-- the server folds those by it (src/server/ingest/reference.ts, D16).
+local readings = {}
+local picked = false
+
+local function identityOf(m)
+    return m.outcome .. "\n" .. m.name .. "\n" .. string.format("%d", m.count) .. "\n"
+        .. string.format("%d", m.price) .. "\n" .. (m.reason or "")
+end
+
+local function knownFor(identity)
+    local list = readings[identity]
+    if not list then
+        list = {}
+        readings[identity] = list
+    end
+    return list
+end
+
+local function whole(v, min)
+    return type(v) == "number" and v == v and v >= min and v % 1 == 0
+end
+
+-- The rows this session's saved data already holds, each as one known mail (see above).
+local function pickUp(db)
+    if picked then return end
+    picked = true
+    if type(db.sales) ~= "table" then return end
+    for _, row in pairs(db.sales) do
+        if type(row) == "table" and whole(row[1], 0) and type(row[2]) == "string" and whole(row[3], 1)
+            and whole(row[4], 0) and (row[7] == "sold" or row[7] == "returned") and isWholeSecond(row[8]) then
+            local extras = Logic.saleExtras(row) or {}
+            local m = { outcome = row[7], name = row[2], count = row[3], price = row[4], itemID = row[1],
+                deposit = whole(row[5], 0) and row[5] or 0, cut = whole(row[6], 0) and row[6] or 0,
+                reason = row[7] == "returned" and type(extras.reason) == "string" and extras.reason or nil }
+            local known = { expiresAt = row[8], days = {}, n = whole(extras.times, 1) and extras.times or 1, mail = m }
+            if type(row[9]) == "number" then
+                known.days[row[9]] = true
+                known.firstDays = row[9]
+            end
+            local list = knownFor(identityOf(m))
+            list[#list + 1] = known
+        end
+    end
+end
+
+local function keyOf(known)
+    local m = known.mail
+    return Logic.saleKey(m.name, m.count, m.price, known.expiresAt, m.outcome, m.reason)
+end
+
+-- The row a known mail stands for, written as it now is. -> 1 when that changed the saved data, else 0.
+local function write(db, known)
+    local m = known.mail
+    local times = math.min(known.n, Logic.MAX_SALE_TIMES)
+    if Logic.noteSale(db, m.itemID, m.name, m.count, m.price, m.deposit, m.cut, m.outcome, known.expiresAt,
+        known.firstDays, m.reason, times) then
+        return 1
+    end
+    return 0
+end
+
+-- Settles one identity's mails from this walk (steps 1-4 above). -> how many changes it made to the saved data
+local function settle(db, identity, mails)
+    local tolerance, window = Logic.SALE_MATCH_TOLERANCE, Logic.SNAPSHOT_FOLD_WINDOW
+    local known = knownFor(identity)
+    -- This walk's mails by exact daysLeft: identical numbers are one snapshot's identical mails, a group of `c`.
+    local groups, byDays = {}, {}
+    for i = 1, #mails do
+        local m = mails[i]
+        local g = byDays[m.days]
+        if g then
+            g.c = g.c + 1
+        else
+            g = { days = m.days, c = 1, mail = m, minute = m.minute, raw = m.raw }
+            byDays[m.days] = g
+            groups[#groups + 1] = g
+        end
+    end
+    table.sort(groups, function(a, b) return a.raw < b.raw end)
+
+    local claimed, touched = {}, {}
+    local function claim(k, g)
+        if claimed[k] == nil then
+            claimed[k] = 0
+            touched[#touched + 1] = k
+        end
+        claimed[k] = claimed[k] + g.c
+        k.days[g.days] = true
+    end
+
+    -- 1. the same reading
+    local pending = {}
+    for i = 1, #groups do
+        local g, found = groups[i], nil
+        for j = 1, #known do
+            if not known[j].gone and known[j].days[g.days] then
+                found = known[j]
+                break
+            end
+        end
+        if found then claim(found, g) else pending[#pending + 1] = g end
+    end
+
+    -- 2. the same mail, counted down
+    local left = {}
+    for i = 1, #pending do
+        local g, best, bestGap = pending[i], nil, nil
+        for j = 1, #known do
+            local k = known[j]
+            local gap = math.abs(k.expiresAt - g.minute)
+            if not k.gone and gap <= tolerance and (claimed[k] or 0) + g.c <= k.n
+                and (best == nil or gap < bestGap) then
+                best, bestGap = k, gap
+            end
+        end
+        if best then claim(best, g) else left[#left + 1] = g end
+    end
+
+    -- 3. a stale reading superseded
+    local changed, lowered = 0, {}
+    for i = 1, #left do
+        local g, best, bestAhead = left[i], nil, nil
+        for j = 1, #known do
+            local k = known[j]
+            local ahead = k.expiresAt - g.minute
+            if not k.gone and claimed[k] == nil and ahead > tolerance and ahead <= window
+                and (best == nil or ahead < bestAhead) then
+                best, bestAhead = k, ahead
+            end
+        end
+        if best then
+            best.n = best.n - g.c
+            if best.n <= 0 then
+                best.gone = true
+                if Logic.dropSale(db, keyOf(best)) then changed = changed + 1 end
+            else
+                lowered[#lowered + 1] = best
+            end
+        end
+    end
+
+    -- 4. new: at its own minute, or counted into the known mail already on it
+    for i = 1, #left do
+        local g, at = left[i], nil
+        for j = 1, #known do
+            if not known[j].gone and known[j].expiresAt == g.minute then
+                at = known[j]
+                break
+            end
+        end
+        if not at then
+            at = { expiresAt = g.minute, days = {}, n = 0, mail = g.mail, firstDays = g.days }
+            known[#known + 1] = at
+        end
+        claim(at, g)
+    end
+
+    for i = 1, #touched do
+        local k = touched[i]
+        if claimed[k] > k.n then k.n = claimed[k] end
+        changed = changed + write(db, k)
+    end
+    for i = 1, #lowered do
+        if claimed[lowered[i]] == nil and not lowered[i].gone then changed = changed + write(db, lowered[i]) end
+    end
+    return changed
 end
 
 -- Walks the open inbox once. Called on MAIL_SHOW, and on each MAIL_INBOX_UPDATE while it is still open -
--- both of which the player caused. A mail already noted is refused by Logic.noteSale's dedup key, so a
--- second walk of the same inbox records nothing and costs one table lookup per mail.
+-- both of which the player caused. A mail already noted changes nothing (the readings above), so a second
+-- walk of the same inbox records nothing and costs a few table lookups per mail. -> how many changes it made
 function Mail.readInbox()
     if not ns.mailOpen then return 0 end
     -- M72: the member switched "Record my sales" off on Your PCs; their own Data.lua says so. Nothing is read.
     if not Logic.capturesSales(ns.baked) then return 0 end
     local db = ns.db()
+    pickUp(db)
     local now = ns.serverTime()
     local prefixes = returnPrefixes()
-    local added = 0
+    local order, byIdentity = {}, {}
     for index = 1, inboxCount() do
-        if readMail(db, index, now, prefixes) then added = added + 1 end
+        local m = readMail(index, now, prefixes)
+        if m then
+            local identity = identityOf(m)
+            local mails = byIdentity[identity]
+            if not mails then
+                mails = {}
+                byIdentity[identity] = mails
+                order[#order + 1] = identity
+            end
+            mails[#mails + 1] = m
+        end
     end
-    if added > 0 then
+    local changed = 0
+    for i = 1, #order do changed = changed + settle(db, order[i], byIdentity[order[i]]) end
+    if changed > 0 then
         ns.pendingUpload = true -- something is now waiting on a Sync / /tally reload to go out
         ns.changed()
     end
-    return added
+    return changed
 end
 
 ---------------------------------------------------------------------------------------------------
