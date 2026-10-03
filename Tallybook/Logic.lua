@@ -9,7 +9,7 @@ ns = ns or {}
 local L = {}
 ns.Logic = L
 
-L.VERSION = "0.16.0"
+L.VERSION = "0.17.0"
 -- Two independent version counters, mirroring the server (src/shared/scan-schema.ts SCAN_SCHEMA_VERSION,
 -- src/shared/ref-doc.ts REF_SCHEMA_VERSION): the scan document's shape (replicate, browse) has not changed
 -- since M1, so buildDoc still tags SCAN_SCHEMA; the reference document gained items, suffixes and named
@@ -946,6 +946,14 @@ end
 -- The profit summary of a whole profession (Summary.lua): the tooltip's numbers, one row per recipe.
 ---------------------------------------------------------------------------------------------------
 
+-- The one rule for what an item sells for (M3, M10): the server's market value when it has one, today's
+-- cheapest listing otherwise. -> price (nil when neither), "market" | "now" - the source, so a caller can name it.
+function L.salePrice(itemID, market, prices)
+    local price = type(market) == "table" and market[itemID] or nil
+    if isCount(price, 1) then return price, "market" end
+    return type(prices) == "table" and prices[itemID] or nil, "now"
+end
+
 -- recipeIDs: the open profession's recipes, in the game's order. index, outputs: from recipeIndex. bound (2026-09-25,
 -- "Cannot Sell") is optional: { [itemID] = true } for an output the client says binds on pickup - read live off
 -- GetItemInfo's own bindType (feature-detected in Summary.lua, never here: this file touches no client API), so
@@ -976,10 +984,7 @@ function L.profitSummary(recipeIDs, index, outputs, prices, vendor, listed, mark
             if type(bound) == "table" and bound[itemID] then
                 row.status = "bop"
             else
-                local price, from = type(market) == "table" and market[itemID] or nil, "market"
-                if not isCount(price, 1) then
-                    price, from = type(prices) == "table" and prices[itemID] or nil, "now"
-                end
+                local price, from = L.salePrice(itemID, market, prices)
                 local profit = L.craftingProfit(cost, missing, qty, price)
                 if profit then
                     row.sale, row.profit, row.saleFrom = price * qty, profit, from
@@ -1352,6 +1357,17 @@ function L.applyBaked(db, baked, now)
 end
 
 ---------------------------------------------------------------------------------------------------
+-- "Record my sales" (M72): the member's own switch on Your PCs, carried back in their own Data.lua
+---------------------------------------------------------------------------------------------------
+
+-- The server writes captureSales = false into a member's data file only when they switched it off
+-- (src/shared/bake.ts). Only that exact value turns recording off: a file that says nothing, or anything else,
+-- leaves Mail.lua working as it always has.
+function L.capturesSales(baked)
+    return not (type(baked) == "table" and baked.captureSales == false)
+end
+
+---------------------------------------------------------------------------------------------------
 -- The shopping list (0.12.0): planned on the web, carried back in the member's own Data.lua
 ---------------------------------------------------------------------------------------------------
 
@@ -1429,6 +1445,17 @@ end
 local SCAN_WORDS = { replicate = "full", browse = "quick" }
 function L.scanWord(kind)
     return SCAN_WORDS[kind] or tostring(kind)
+end
+
+-- M4: a count for the one line a scan prints: 71899 -> "71,899". Whole numbers only; anything else prints as 0.
+function L.groupDigits(n)
+    if type(n) ~= "number" or n ~= n or n == math.huge or n == -math.huge then return "0" end
+    local text = string.format("%.0f", math.abs(n))
+    local out = string.gsub(string.reverse(text), "(%d%d%d)", "%1,")
+    out = string.reverse(out)
+    if string.sub(out, 1, 1) == "," then out = string.sub(out, 2) end
+    if n < 0 and out ~= "0" then out = "-" .. out end
+    return out
 end
 
 function L.formatAge(seconds)

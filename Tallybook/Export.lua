@@ -40,7 +40,7 @@ function Export.save(doc)
     local rowCount = type(doc.rows) == "table" and #doc.rows or 0
     if rowCount > Logic.MAX_ROWS then
         ns.print(string.format("not saved: %.0f rows, and the server accepts at most %.0f per scan."
-            .. " The market has outgrown this version of Tallybook; /tally browse still works.",
+            .. " The market has outgrown this version of Tallybook; Quick scan still works.",
             rowCount, Logic.MAX_ROWS))
         return false
     end
@@ -98,18 +98,18 @@ function Export.save(doc)
         jsonMs = t1 - t0,
         base64Ms = t2 - t1,
     }
-    ns.print(string.format("saved %s scan: %.0f rows, %.1f KB, json %.0f ms, base64 %.0f ms — /tally reload to write it to disk",
+    ns.debugPrint(string.format("saved %s scan: %.0f rows, %.1f KB, json %.0f ms, base64 %.0f ms",
         Logic.scanWord(doc.kind), stats.rows, stats.bytes / 1024, stats.jsonMs, stats.base64Ms))
     if lost > 0 then
         ns.print(string.format("no room left: dropped %.0f %s that had never been written to disk%s."
-            .. " /tally reload before scanning again.", lost, lost == 1 and "scan" or "scans",
+            .. " Press Sync before scanning again.", lost, lost == 1 and "scan" or "scans",
             oldest and (", from " .. Logic.formatAge(ns.serverTime() - oldest) .. " ago") or ""))
     else
         -- Worth a word only while the scan next in line to be pushed out exists nowhere but here.
         local scans, bytes = Logic.ringStats(db.chunks)
         local nearlyFull = scans >= Logic.RING_MAX_SCANS - 2 or bytes > 0.75 * Logic.RING_MAX_BYTES
         if nearlyFull and unsaved[Logic.uidOf(db.chunks[1]) or ""] then
-            ns.print(string.format("nearly full: %.0f of %.0f scans, %.1f of %.0f MB held in memory. /tally reload now"
+            ns.print(string.format("nearly full: %.0f of %.0f scans, %.1f of %.0f MB held in memory. Press Sync now"
                 .. " to write them to disk - once it is full, each new scan pushes out the oldest one.",
                 scans, Logic.RING_MAX_SCANS, bytes / 1048576, Logic.RING_MAX_BYTES / 1048576))
         end

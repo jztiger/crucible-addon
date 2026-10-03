@@ -406,11 +406,12 @@ function Craft.basket(crafts, chosen)
         local estimate, missing = Logic.craftingCost(recipe, db.prices, db.vendor)
         if estimate and missing == 0 then line = line .. "  (cheapest-listing estimate: " .. money(estimate) .. " each)" end
         ns.print(line)
-        local price = type(db.prices) == "table" and db.prices[chosen.itemID] or nil
+        local price, from = Logic.salePrice(chosen.itemID, db.market, db.prices)
         local profit = Logic.craftingProfit(b.perCraft, 0, recipe.qty, price)
         if profit then
-            -- 0.11.0: the Tally 2.0 words - the price is Lowest now, and a loss is a negative Profit.
-            ns.print("lowest now " .. money(price) .. ": profit " .. (profit >= 0 and "" or "-") .. money(math.abs(profit)) .. " each")
+            -- M10: the same rule as the tooltip and the Profit panel - market value first, lowest now as the named fallback.
+            ns.print((from == "market" and "market value " or "lowest now ") .. money(price) .. ": profit "
+                .. (profit >= 0 and "" or "-") .. money(math.abs(profit)) .. " each")
         end
     end
 

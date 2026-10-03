@@ -21,6 +21,10 @@
 -- What is read lands in TallybookDB.sales (Logic.noteSale, which owns the dedup rule); it leaves in the
 -- reference document on the next Sync or /tally reload, like everything else.
 --
+-- M72: a member who switched "Record my sales" off on Your PCs gets captureSales = false in their own Data.lua
+-- (Logic.capturesSales), and then nothing here reads the inbox at all. The server keeps none of their sales
+-- either way, so a copy of the addon from before this line changes nothing they keep.
+--
 -- 0.11.0 (D15): a Sync button on the mail window while the mailbox is open, with the "press Sync to upload"
 -- hint while something is waiting. It is a click, and it calls the same ns.reload as /tally reload and the
 -- strip's Sync (Core.lua) - the one place the UI is ever reloaded. Nothing else here is new: no timer, no
@@ -218,6 +222,8 @@ end
 -- second walk of the same inbox records nothing and costs one table lookup per mail.
 function Mail.readInbox()
     if not ns.mailOpen then return 0 end
+    -- M72: the member switched "Record my sales" off on Your PCs; their own Data.lua says so. Nothing is read.
+    if not Logic.capturesSales(ns.baked) then return 0 end
     local db = ns.db()
     local now = ns.serverTime()
     local prefixes = returnPrefixes()

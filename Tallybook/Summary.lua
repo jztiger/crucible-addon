@@ -267,7 +267,7 @@ local function paint()
         panel.title:SetText(professionName() .. " - prices from " .. Logic.formatAge(ns.serverTime() - db.pricesAt) .. " ago"
             .. ns.UI.priceSource(" (", ")"))
     else
-        panel.title:SetText(professionName() .. " - no AH prices yet: /tally browse at the auction house")
+        panel.title:SetText(professionName() .. " - no AH prices yet: Quick scan at the auction house")
     end
 
     local last = math.max(0, #current - VISIBLE)

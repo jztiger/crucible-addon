@@ -34,9 +34,11 @@ local MAX_RESETTLES = 15      -- ... and is given this many more tries if it kee
 local SETTLE_BUDGET = 60      -- ... or this long after the first list event if it keeps announcing changes
 local REPLICATE_TIMEOUT = 30  -- no list event by then: say so, and let the player do something else
 local LATE_LIMIT = 300        -- a list that arrives within this long of the request is still read
-local LINK_RETRY_SECONDS = 1  -- rows whose item link was not loaded are looked at once more after this
+local LINK_WAIT_FRAMES = 120   -- rows whose item link was not loaded: their items are requested, and the client gets
+                              -- at most this many frames (about two seconds) to answer before they are read once more
+local LINK_REQUEST_CAP = 2000 -- ... for at most this many distinct items
 local NO_LINK_MIN = 10        -- rows still without a link after that are tolerated: this many at least,
-local NO_LINK_SHARE = 0.001   -- ... or this share of the list, whichever is more (see finishReplicate)
+local NO_LINK_SHARE = 0.005   -- ... or this share of the list, whichever is more (see finishReplicate)
 local SIGNATURE_MIN_ROWS = 50 -- lists this long are compared with the last one read (see lastSignature)
 local BROWSE_TIMEOUT = 180
 local BROWSE_MAX_PAGES = 400
@@ -250,8 +252,9 @@ local function finishReplicate(run, agg, n, unreadable, noLink)
     local complete = run.readOk == true and (not run.unstable)
         and untrusted == 0
         and agg.rowCount == n - noLink and run.finalCount == n
-    ns.print(string.format("full scan: %.0f auctions -> %.0f rows, %.0f item keys, %.0f bid-only, %.0f without a link, %.1f s",
+    ns.debugPrint(string.format("full scan: %.0f auctions -> %.0f rows, %.0f item keys, %.0f bid-only, %.0f without a link, %.1f s",
         agg.rowCount, #rows, agg:keyCount(), agg.bidOnly, noLink, seconds(run)))
+    local verdict = "complete"
     if not complete then
         local why = "the list kept changing"
         if not run.readOk then
@@ -263,7 +266,7 @@ local function finishReplicate(run, agg, n, unreadable, noLink)
         end
         -- Since 0.9.1 the server keeps a cut-short full scan's prices and only declines to mark anything sold
         -- out from it; a cut-short BROWSE scan (finishBrowse) is still set aside whole.
-        ns.print("INCOMPLETE (" .. why .. "): saved - the server keeps its prices but marks nothing sold out")
+        verdict = "INCOMPLETE (" .. why .. ") - the server keeps its prices but marks nothing sold out"
     end
     local t1 = ns.serverTime()
     local doc = Logic.buildDoc(run.meta, "replicate", complete, run.t0, t1, rows, {
@@ -274,7 +277,9 @@ local function finishReplicate(run, agg, n, unreadable, noLink)
         variant = "bonus",
         suffixSeen = agg.suffixSeen,
     })
-    ns.Export.save(doc)
+    -- M4: the ONE line a full scan says, once it is saved (Export.save says its own reason when it is not).
+    local saved = ns.Export.save(doc)
+    if saved then ns.print(string.format("Full scan: %s rows · %s", Logic.groupDigits(n), verdict)) end
     lastScanAt = t1 -- the market was read, complete or not: the strip counts it as this session's newest
     ns.pendingUpload = true -- 0.9.3: something is now waiting on a Sync / /tally reload to go out
 end
@@ -358,6 +363,36 @@ local function noteBonusLinesFromLink(db, itemID, suffixID, itemLink)
         end
     end
     if #raw > 0 then Logic.noteSuffixBonus(db, itemID, suffixID, raw) end
+end
+
+-- M13: the items a full scan asked the client to load and has not heard back about, for the scan that is
+-- waiting on them. ITEM_DATA_LOAD_RESULT fires for every addon's loads; only ids in `pending` matter here.
+local function onItemDataLoaded(itemID)
+    local run = current
+    local pending = run and run.linkPending
+    if pending and pending[itemID] then
+        pending[itemID] = nil
+        run.linkPendingCount = run.linkPendingCount - 1
+    end
+end
+ns.on("ITEM_DATA_LOAD_RESULT", onItemDataLoaded)
+
+-- Asks the client to load each distinct item whose rows have no link (one ordinary call per item, inside the
+-- scan the player's click started: no timer loop). Returns how many answers are now awaited.
+local function requestLinkItems(run, waiting)
+    run.linkPending, run.linkPendingCount = {}, 0
+    if type(C_Item) ~= "table" or type(C_Item.RequestLoadItemDataByID) ~= "function" then return 0 end
+    for k = 1, #waiting do
+        local id = waiting[k][2]
+        if not run.linkPending[id] and run.linkPendingCount < LINK_REQUEST_CAP then
+            local ok = pcall(C_Item.RequestLoadItemDataByID, id)
+            if ok then
+                run.linkPending[id] = true
+                run.linkPendingCount = run.linkPendingCount + 1
+            end
+        end
+    end
+    return run.linkPendingCount
 end
 
 local function processReplicate(run, n)
@@ -451,10 +486,21 @@ local function processReplicate(run, n)
                 ns.after(0, step) -- the next slice on the next frame, so the client does not freeze
                 return
             end
-            if #waiting > 0 then
-                ns.after(LINK_RETRY_SECONDS, step) -- give the client a moment to load those items
+        end
+        if #waiting > 0 and not run.linkWaitOver then
+            -- M13: ask the client for those items once, then give it a bounded number of frames to answer
+            -- (it fires ITEM_DATA_LOAD_RESULT per item; the wait ends early once all have). With no load API
+            -- nothing is awaited and the rows get their one more look after the same bounded wait.
+            if run.linkFrames == nil then
+                run.linkFrames = 0
+                run.linkAsked = requestLinkItems(run, waiting) > 0
+            end
+            run.linkFrames = run.linkFrames + 1
+            if run.linkFrames < LINK_WAIT_FRAMES and (not run.linkAsked or run.linkPendingCount ~= 0) then
+                ns.after(0, step)
                 return
             end
+            run.linkWaitOver = true
         end
         while looked < #waiting and budget > 0 do
             looked = looked + 1
@@ -496,7 +542,7 @@ local function readList(run)
         ns.print("full scan: the list came back empty. Nothing was saved.")
         return
     end
-    ns.print(string.format("full scan: %.0f auctions, reading ...", n))
+    ns.debugPrint(string.format("full scan: %.0f auctions, reading ...", n))
     processReplicate(run, n)
 end
 
@@ -527,7 +573,7 @@ function Scan.replicate()
     local allowed, remaining = Logic.canReplicate(now, state.lastReplicateAt, Logic.REPLICATE_COOLDOWN)
     if not allowed then
         ns.print("the full scan is on cooldown for another " .. Logic.formatAge(remaining)
-            .. " (Tallybook asks for one at most every 15 minutes). /tally browse works any time.")
+            .. " (Tallybook asks for one at most every 15 minutes). Quick scan works any time.")
         return
     end
 
@@ -542,7 +588,7 @@ function Scan.replicate()
         ns.print("the full scan request failed: " .. tostring(err))
         return
     end
-    ns.print("full scan requested ...")
+    ns.debugPrint("full scan requested ...")
     ns.after(REPLICATE_TIMEOUT, function()
         if current ~= run or run.events > 0 then return end
         -- Not given up on: only moved out of the way. This sends nothing; if the list this request
@@ -551,7 +597,7 @@ function Scan.replicate()
         late = run
         ns.print("no answer after 30 s: the request was throttled by the server's own cooldown, or the server"
             .. " is slow. Nothing is saved yet - if the list still arrives while the auction house stays"
-            .. " open, it will be read. /tally browse works meanwhile.")
+            .. " open, it will be read. Quick scan works meanwhile.")
     end)
 end
 
@@ -561,7 +607,7 @@ ns.on("REPLICATE_ITEM_LIST_UPDATE", function()
         late = nil
         if ns.ahOpen and (ns.clockMs() - waited.startedMs) / 1000 <= LATE_LIMIT then
             current = waited
-            ns.print("full scan: the list has arrived after all ...")
+            ns.debugPrint("full scan: the list has arrived after all ...")
         end
     end
     local run = current
@@ -625,7 +671,7 @@ local sendingOwn = false
 local function abandonBrowse(run, why)
     if current == run then current = nil end
     ns.print("quick scan: " .. why .. ", so the results are no longer this scan's. Nothing was saved and the"
-        .. " tooltip prices were left alone. Run /tally browse again, and leave the search alone until it is done.")
+        .. " tooltip prices were left alone. Press Quick scan again, and leave the search alone until it is done.")
 end
 
 local function onForeignSearch()
@@ -730,8 +776,9 @@ local function finishBrowse(run, complete, why)
         why = string.format("%.0f of %.0f rows could not be read", #results - #rows, #results)
     end
     local t1 = ns.serverTime()
-    ns.print(string.format("quick scan: %.0f item keys in %.0f %s, %.1f s", #rows, run.pages,
+    ns.debugPrint(string.format("quick scan: %.0f item keys in %.0f %s, %.1f s", #rows, run.pages,
         run.pages == 1 and "page" or "pages", seconds(run)))
+    local verdict = "press Sync to upload"
     if complete then
         local db = ns.db()
         db.prices = Logic.priceTable(rows)
@@ -740,10 +787,12 @@ local function finishBrowse(run, complete, why)
         db.pricesFrom = nil -- the player's own scan now: no "saved" / "shared" label
         ns.changed() -- the costs in an open profession window follow the new prices
     else
-        ns.print("INCOMPLETE (" .. tostring(why) .. "): saved for the record, but the server will not use its prices")
+        verdict = "INCOMPLETE (" .. tostring(why) .. ") - saved for the record, but the server will not use its prices"
     end
     local doc = Logic.buildDoc(run.meta, "browse", complete, run.t0, t1, rows, { uid = run.uid, rowCount = #results })
-    ns.Export.save(doc)
+    -- M4: the ONE line a quick scan says, once it is saved.
+    local saved = ns.Export.save(doc)
+    if saved then ns.print(string.format("Quick scan: %s items · %s", Logic.groupDigits(#rows), verdict)) end
     lastScanAt = t1 -- the market was read, complete or not: the strip counts it as this session's newest
     ns.pendingUpload = true -- 0.9.3: something is now waiting on a Sync / /tally reload to go out
     -- M2: item names, quality and the full names of any suffixed keys, learned from this scan's own
@@ -776,7 +825,7 @@ local function learnNext(run)
     if run.index >= #run.keys then
         current = nil
         if run.learned > 0 then
-            ns.print(string.format("learned %.0f item %s for the group", run.learned,
+            ns.debugPrint(string.format("learned %.0f item %s for the group", run.learned,
                 run.learned == 1 and "variant" or "variants"))
         end
         return
@@ -1196,6 +1245,8 @@ function Scan.selftest()
         variant = "bonus",
         suffixSeen = agg.suffixSeen,
     })
-    ns.Export.save(doc)
+    if ns.Export.save(doc) then
+        ns.print(string.format("Self test: %s rows · press Sync to upload", Logic.groupDigits(#doc.rows)))
+    end
     ns.pendingUpload = true -- 0.9.3: something is now waiting on a Sync / /tally reload to go out
 end

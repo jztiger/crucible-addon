@@ -16,6 +16,13 @@ function ns.print(msg)
     print(PREFIX .. tostring(msg))
 end
 
+-- M4: detail a player does not need after every scan (timings, sizes, progress) - said only after /tally debug.
+-- A plain session flag, not saved data: the next session starts quiet again.
+local debugOn = false
+function ns.debugPrint(msg)
+    if debugOn then ns.print(msg) end
+end
+
 -- Midnight-era clients can hand addons "secret values" that must not be compared or stored.
 function ns.isSecret(v)
     return type(issecretvalue) == "function" and issecretvalue(v) == true
@@ -238,6 +245,12 @@ function commands.basket(arg, msg)
     ns.Craft.basket(crafts, chosen)
 end
 
+-- /tally debug : switch the timing and progress detail on or off for this session (M4)
+function commands.debug()
+    debugOn = not debugOn
+    ns.print("detail lines are " .. (debugOn and "on" or "off") .. " (/tally debug switches them)")
+end
+
 -- /tally shopping : the shopping list planned on the web (0.12.0) - shown at the auction house (Shopping.lua)
 function commands.shopping()
     ns.Shopping.command()
@@ -284,7 +297,7 @@ SlashCmdList["TALLYBOOK"] = function(msg)
     local command = commands[word]
     if not command then
         ns.print("open the auction house - it scans; buttons for Quick scan / Full scan / Stop / Sync are on the frame.")
-        ns.print("commands: /tally (status) | scan | browse | profit | basket | shopping | list | selftest | reload")
+        ns.print("commands: /tally (status) | scan | browse | profit | basket | shopping | list | selftest | reload | debug")
         return
     end
     local ok, err = pcall(command, arg, msg)

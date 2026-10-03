@@ -281,7 +281,7 @@ function UI.status()
     ns.print("last full scan: " .. age(db.state.lastReplicateAt, now)
         .. (allowed and ", ready" or (", cooldown " .. Logic.formatAge(remaining) .. " left")))
     ns.print("last quick scan: " .. age(db.state.lastBrowseAt, now))
-    ns.print(string.format("held in memory: %.0f %s (room for %.0f), %.1f KB of %.0f MB - /tally reload writes them to disk",
+    ns.print(string.format("held in memory: %.0f %s (room for %.0f), %.1f KB of %.0f MB - Sync writes them to disk",
         scans, scans == 1 and "scan" or "scans", Logic.RING_MAX_SCANS, bytes / 1024, Logic.RING_MAX_BYTES / 1048576))
 
     local priced = 0
@@ -289,7 +289,7 @@ function UI.status()
     if priced > 0 then
         ns.print(string.format("tooltip prices: %.0f items, from %s", priced, age(db.pricesAt, now)) .. UI.priceSource(" (", ")"))
     else
-        ns.print("tooltip prices: none yet - /tally browse fills them")
+        ns.print("tooltip prices: none yet - Quick scan fills them")
     end
     local recipes, vendor = 0, 0
     for _, list in pairs(db.recipes) do
