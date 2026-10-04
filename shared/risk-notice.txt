@@ -1,28 +1,31 @@
-Tallybook notice, version 4
+Crucible notice, version 5
 
 Before you install - please read this
 
-Tallybook is a private tool for our group of friends. It is not made, approved or supported by Blizzard. This notice says what it does today. If that ever changes, the tray app shows you the new version and asks again before it carries on.
+Crucible (it was called Tallybook until October 2026) is a private tool for our group of friends. It is not made, approved or supported by Blizzard. This notice says what it does today. If that ever changes, the tray app shows you the new version and asks again before it carries on.
 
 WHAT THE TRAY APP DOES
-It reads one file that the Tallybook addon saves - your auction house scans, and what the addon has learned about recipes and vendor prices - and sends that file to our group's server. That file also says which recipes each of your characters knows, and their skill rank in each profession. Each character is listed under a scrambled id, never under its name.
+It reads one file that the Crucible addon saves - your auction house scans, and what the addon has learned about recipes and vendor prices - and sends that file to our group's server. That file also says which recipes each of your characters knows, and their skill rank in each profession. Each character is listed under a scrambled id, never under its name.
 
-It writes one data file back into the Tallybook addon's own folder, called Data.lua, so your game has the group's prices without you scanning. Your own shopping list and your own Tallybook settings go into that same file. Your Data.lua is made for you and goes only to your PCs.
+It writes one data file back into the Crucible addon's own folder, called Data.lua, so your game has the group's prices without you scanning. Your own shopping list, your own sales and your own Crucible settings go into that same file. Your Data.lua is made for you and goes only to your PCs.
 
-When you open your mailbox, the addon notes your own auction sales and returns - the item, the count, the price, the deposit and the auction house's cut - and never who bought it or anyone's name. You see your sales in detail; the group sees only totals per item. This is on unless you switch "Record my sales" off on the Your PCs page of the website. Switch it off and the server keeps none from then on; the addon stops reading them at your next login or Sync.
+When you open your mailbox, the addon notes your own auction sales and returns - the item, the count, the price, the deposit and the auction house's cut - and never who bought it or anyone's name. The Open All button in the mailbox is the game's own; Crucible only reads what it opens. You see your sales in detail, in the game and on the website; the group sees only totals per item. This is on unless you switch "Record my sales" off on the Your PCs page of the website. Switch it off and the server keeps none from then on; the addon stops reading them at your next login or Sync.
 
-It also installs the Tallybook addon for you, and replaces it when a newer version comes out, so you never have to copy folders about. It writes nothing anywhere else in your game, and it keeps your own prices when it updates. You can switch that off in Settings, and Settings can also put the addon back from the public code on GitHub, without asking our server at all.
+It also installs the Crucible addon for you, and replaces it when a newer version comes out, so you never have to copy folders about. It writes nothing anywhere else in your game, and it keeps your own prices when it updates. You can switch that off in Settings, and Settings can also put the addon back from the public code on GitHub, without asking our server at all.
 
 That is all. It does not touch the game while it runs, and it never sends your account name, your character names or any password. It reads nothing else on your PC, with one exception that is not about you: on the owner's own PC only, it also reads the game's item cache file - eleven tables about items, such as their names and stats - so the website can describe every item. The server asks for that from the owner's install alone; nobody else's tray app ever reads it.
 
 WHAT THE ADDON DOES BY ITSELF
-When you open the auction house, Tallybook runs ONE quick price scan by itself - once per visit, and not at all if someone in the group scanned in the last 30 minutes. It never posts, bids, buys or cancels. To stop it, untick "auto-scan" on the Tallybook strip beside the auction house window; the scan buttons keep working either way.
+When you open the auction house, Crucible runs ONE quick price scan by itself - once per visit, and not at all if someone in the group scanned in the last 30 minutes. To stop it, untick "auto-scan" on the Crucible strip beside the auction house window; the scan buttons keep working either way. Search All runs one search per item on your shopping list after you click it once, and stops when you click Stop.
+
+POSTING AND CANCELLING - ONLY WHEN YOU CLICK
+When you sell something, Crucible shows the group's lowest price and market value for it and fills in a suggested price. You can change it. The auction is posted only when you press the game's Post button, one auction per press. Crucible can also list which of your auctions have been undercut; each one is cancelled only when you click it. It never buys and never bids, and it never posts or cancels anything on its own.
 
 LATER
 Switches for your gold, your purchases, what your characters carry in bags and bank, and your own auctions MAY come later. Each one will be off until you turn it on, and each will be described here, in a new version of this notice, before it ships. This notice does not cover any of them.
 
 THE RISK
-Blizzard's terms do not give permission for programs like this. Well-known tools - the TradeSkillMaster desktop app, for one - have worked the same way for years without Blizzard acting against the people who use them, so the realistic chance of trouble is very small. It is not zero. If Blizzard ever did act, it could affect your whole Battle.net account, not just this game.
+Blizzard's terms do not give permission for programs like this. Well-known tools - the TradeSkillMaster desktop app, for one - have worked the same way for years without Blizzard acting against the people who use them, so the realistic chance of trouble is very small. It is not zero. If Blizzard ever did act, it could affect your whole Battle.net account, not just this game. The part of Crucible that fits Blizzard's rules least well is a suggested posting price that comes from our group's shared scans rather than your own; public addons suggest prices too, and TradeSkillMaster groups share price sources the same way, but that is the edge this tool gives you and you should know it.
 
 YOUR CHOICE
 You can use the addon on its own with no tray app, and upload your file by hand on the website - or not upload at all. With the tray app you can switch off "Bring data back", pause it or quit it whenever you like, and remove it by deleting it.
@@ -30,4 +33,4 @@ You can use the addon on its own with no tray app, and upload your file by hand 
 It is free, and it stays free. Nobody may charge for it or pass it on. One Battle.net account each, and anyone who buys gold is out of the group.
 
 AT LAUNCH
-Tallybook keeps running when World of Warcraft: Forever launches on 4 November; there is nothing to reinstall. Everything gathered during the beta - prices, scans, sales and known recipes - is wiped on 3 November, and the group starts again from nothing at launch.
+Crucible keeps running when World of Warcraft: Forever launches on 4 November; there is nothing to reinstall. Everything gathered during the beta - prices, scans, sales and known recipes - is wiped on 3 November, and the group starts again from nothing at launch.

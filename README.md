@@ -19,8 +19,9 @@ A small, read-only auction house notebook for World of Warcraft: Forever.
 
 ## Install
 
-Copy the `Tallybook` folder into `Interface\AddOns\` inside your Forever folder (the folder in `World of Warcraft`
-whose name looks like `_something_`), start the game, and type `/tally`.
+Read `shared/risk-notice.txt` first: it says what the addon and the tray app do, and the risk. Then copy the
+`Tallybook` folder into `Interface\AddOns\` inside your Forever folder (the one that holds `Wow.exe` for Forever;
+on the beta it was called `_classic_beta_`), start the game, and type `/tally`.
 
 Open the auction house and Tallybook scans it once, by itself (or press **Full scan** for a full snapshot); open a
 profession window and it learns your recipes. Nothing to type either way.
