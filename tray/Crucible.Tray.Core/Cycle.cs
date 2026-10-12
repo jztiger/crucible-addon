@@ -33,6 +33,9 @@ namespace Crucible.Tray
         public string? AddonInstalled { get; set; }
         /// <summary>The server sent a different list of product folders; it is in the config now, to be saved.</summary>
         public bool ProductsChanged { get; set; }
+        /// <summary>Spec 2026-10-12: a verified newer tray is written beside the exe and waits for a quiet moment.</summary>
+        public string? TrayStaged { get; set; }
+        public Refusal? TrayUpdateFailed { get; set; }
         public TrayState State { get; set; } = TrayState.Ok;
         /// <summary>Plain words for the tooltip when the state is not Ok.</summary>
         public string Reason { get; set; } = "";
@@ -82,13 +85,43 @@ namespace Crucible.Tray
         private DateTime? addonCheckedUtc;
         private bool addonUnsure;
         private DateTime? itemCacheCheckedUtc;
+        private readonly string? exePath;
+        private readonly ISigner? signer;
+        private bool selfSignerKnown;
+        private SignerInfo? selfSigner;
+        private DateTime? trayCheckedUtc;
+        /// <summary>The version waiting in <see cref="UpdatePaths.Staged"/>, once a pass verified and wrote it.</summary>
+        public string? StagedVersion { get; private set; }
+        public UpdatePaths? UpdatePaths => exePath == null ? null : SelfUpdate.Plan(exePath);
+        public TrayConfig Config => config;
+        /// <summary>The running build's signer, read once; null means an unsigned build, which never updates itself.</summary>
+        public SignerInfo? SelfSigner
+        {
+            get
+            {
+                if (!selfSignerKnown)
+                {
+                    selfSignerKnown = true;
+                    try { selfSigner = exePath != null && signer != null ? signer.SignerOf(exePath) : null; }
+                    catch (Exception) { selfSigner = null; }
+                }
+                return selfSigner;
+            }
+        }
+        /// <summary>The swap failed: the staged version is forgotten so the next pass does not try again.</summary>
+        public void ForgetStaged() { StagedVersion = null; }
+        private int trayMisses;
+        /// <summary>Three checks in a row wanted an update and could not get it (review I4a): the nudge takes over.</summary>
+        public bool TrayStalled => trayMisses >= 3;
 
         public DateTime? LastUploadUtc { get; private set; }
         public DateTime? LastFetchUtc { get; private set; }
         /// <summary>When the prices in the data file were scanned, for "prices from 3h ago".</summary>
         public DateTime? PricesAtUtc { get; private set; }
 
-        public Cycle(TrayConfig config, ServerClient client, SentLog sent, Stability stability, TrayLog log, Func<DateTime> nowUtc)
+        /// <param name="exePath">The running program's own file, for the self-update (spec 2026-10-12); null switches it off.</param>
+        /// <param name="signer">The shell's Authenticode check; null switches the self-update off.</param>
+        public Cycle(TrayConfig config, ServerClient client, SentLog sent, Stability stability, TrayLog log, Func<DateTime> nowUtc, string? exePath = null, ISigner? signer = null)
         {
             this.config = config;
             this.client = client;
@@ -96,6 +129,8 @@ namespace Crucible.Tray
             this.stability = stability;
             this.log = log;
             this.nowUtc = nowUtc;
+            this.exePath = exePath;
+            this.signer = signer;
             log.Hide(config.ClientSecret, config.UploadKey);
         }
 
@@ -164,6 +199,7 @@ namespace Crucible.Tray
             }
 
             await KeepItemCacheSent(now, force).ConfigureAwait(false);
+            await KeepTrayCurrent(report, now, force).ConfigureAwait(false);
 
             bool due = LastFetchUtc == null || now - LastFetchUtc.Value >= FetchEvery;
             if (config.BringDataBack && (report.Uploaded > 0 || force || due))
@@ -197,6 +233,73 @@ namespace Crucible.Tray
             backoff.Reset();
             // Not green over a scan that never arrived: yellow until a later file goes through (the log says which).
             return turnedDown ? Done(report, TrayState.Retrying, FileTurnedDown) : report;
+        }
+
+        /// <summary>
+        /// Spec 2026-10-12: fetches a newer signed tray and stages it beside the exe, verified in the spec's order. The
+        /// shell swaps it in after a quiet pass. A download that fails any check is deleted and its version remembered,
+        /// so it is never fetched again; an unsigned running build never fetches at all.
+        /// </summary>
+        private async Task KeepTrayCurrent(CycleReport report, DateTime now, bool force)
+        {
+            if (exePath == null || signer == null || StagedVersion != null) return;
+            bool signedBuild = SelfSigner != null;
+            UpdateStep step = SelfUpdate.Decide(AppInfo.Version, null, config.FailedUpdateVersion, trayCheckedUtc, now, force, config.Paused, signedBuild);
+            if (step == UpdateStep.Unsigned || step == UpdateStep.Paused || step == UpdateStep.NotDue) return;
+            trayCheckedUtc = now;
+            ServerClient.TrayOffer? offer = await client.LatestTrayAsync().ConfigureAwait(false);
+            string? version = offer?.Version;
+            step = SelfUpdate.Decide(AppInfo.Version, version, config.FailedUpdateVersion, null, now, true, config.Paused, signedBuild);
+            if (step != UpdateStep.Fetch || version == null) return;
+            if (offer?.Sha256 == null)
+            {
+                trayMisses++;
+                log.Write("tray " + version + " is on offer without a hash - not fetched");
+                return;
+            }
+            (FetchResult result, byte[]? body) = await client.FetchTrayAsync().ConfigureAwait(false);
+            if (result != FetchResult.Changed)
+            {
+                trayMisses++;
+                log.Write("tray " + version + " not fetched: " + client.LastError);
+                if (result == FetchResult.Invalid) Fail(report, version, Refusal.TooLarge);
+                return;
+            }
+            trayMisses = 0;
+            Refusal verdict = SelfUpdate.Verify(body, offer.Sha256, SelfUpdate.MaxBytes);
+            if (verdict != Refusal.Ok) { Fail(report, version, verdict); return; }
+            UpdatePaths paths = SelfUpdate.Plan(exePath);
+            try
+            {
+                if (File.Exists(paths.Staged)) File.Delete(paths.Staged);
+                AtomicFile.Write(paths.Staged, body!);
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                log.Write("tray " + version + " could not be staged: " + e.GetType().Name);
+                Fail(report, version, Refusal.StagingFailed);
+                return;
+            }
+            SignerInfo? signedBy;
+            try { signedBy = signer.SignerOf(paths.Staged); }
+            catch (Exception) { signedBy = null; }
+            verdict = SelfUpdate.CheckSigner(signedBy, SelfSigner, version);
+            if (verdict != Refusal.Ok)
+            {
+                try { File.Delete(paths.Staged); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                Fail(report, version, verdict);
+                return;
+            }
+            StagedVersion = version;
+            report.TrayStaged = version;
+            log.Write("tray " + version + " staged, signed by " + signedBy!.SimpleName); // a checked publisher name: safe to log
+        }
+
+        private void Fail(CycleReport report, string version, Refusal why)
+        {
+            config.FailedUpdateVersion = version;
+            report.TrayUpdateFailed = why;
+            log.Write("tray " + version + " refused: " + why);
         }
 
         /// <summary>

@@ -139,3 +139,31 @@ function Export.saveRef()
     db.ref = tagged
     return true
 end
+
+-- The quest library's session document -> CrucibleDB.questString, one "q1:<base64 JSON>" string (Logic.questTag),
+-- rebuilt from scratch each time, beside the reference string. Same contract on the other side:
+-- src/shared/quest-doc.ts. The character is named by Logic.charHash of its own GUID - never a name, never the GUID.
+-- -> true when a string was stored
+function Export.saveQuest()
+    local db = ns.db()
+    db.questString = nil
+    if not Logic.recordsQuests(ns.baked) then return false end
+    if not Export.available() then return false end
+    local guid
+    if type(UnitGUID) == "function" then
+        local ok, g = pcall(UnitGUID, "player")
+        if ok and not ns.isSecret(g) and type(g) == "string" then guid = g end
+    end
+    local doc = Logic.questDoc(db, ns.serverTime(), ns.meta(), Logic.charHash(guid))
+    if not doc then return false end
+    local E = C_EncodingUtil
+    local okJson, json = pcall(E.SerializeJSON, doc)
+    if not okJson or type(json) ~= "string" or json == "" then return false end
+    local okB64, b64 = pcall(E.EncodeBase64, json)
+    if not okB64 or type(b64) ~= "string" then return false end
+    if string.find(b64, "%s") then b64 = string.gsub(b64, "%s+", "") end
+    local tagged = Logic.questTag(b64)
+    if Logic.questOf(tagged) == nil or #tagged > Logic.QUEST_MAX_BYTES then return false end
+    db.questString = tagged
+    return true
+end

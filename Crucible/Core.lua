@@ -138,6 +138,7 @@ end
 function ns.beforeWrite()
     ns.sealRing()
     if ns.Export and ns.Export.saveRef then pcall(ns.Export.saveRef) end
+    if ns.Export and ns.Export.saveQuest then pcall(ns.Export.saveQuest) end
 end
 
 -- What the player has chosen (Logic.settings): saved beats what was baked at the last install beats the default.

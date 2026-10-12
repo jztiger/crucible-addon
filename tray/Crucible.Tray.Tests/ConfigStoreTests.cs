@@ -191,6 +191,21 @@ namespace Crucible.Tray.Tests
         }
 
         [Fact]
+        public void The_failed_update_version_round_trips_and_junk_reads_as_none()
+        {
+            using var dir = new TempDir();
+            string file = dir.File("config.json");
+            TrayConfig c = ConfigStore.ImportDownload(Download)!;
+            c.FailedUpdateVersion = "0.99.5";
+            ConfigStore.Save(file, c, new FakeProtector());
+            Assert.Equal("0.99.5", ConfigStore.Load(file, new FakeProtector())!.FailedUpdateVersion);
+            Assert.Contains("\"failedUpdate\": \"0.99.5\"", System.IO.File.ReadAllText(file)); // the store pretty-prints
+            string text = System.IO.File.ReadAllText(file).Replace("\"failedUpdate\": \"0.99.5\"", "\"failedUpdate\": \"C:\\\\evil\"");
+            System.IO.File.WriteAllText(file, text);
+            Assert.Equal("", ConfigStore.Load(file, new FakeProtector())!.FailedUpdateVersion);
+        }
+
+        [Fact]
         public void The_first_run_after_the_rename_takes_Tallybooks_config_once_and_leaves_the_old_file_where_it_was()
         {
             using var dir = new TempDir();
@@ -265,6 +280,102 @@ namespace Crucible.Tray.Tests
             ConfigStore.Save(oldPath, Chosen(), new FakeProtector("-another-user"));
             Assert.Null(ConfigStore.MoveFromOldName(oldPath, oldSeal, newPath, newSeal));
             Assert.False(File.Exists(newPath));
+        }
+
+        private const string OldUi = "https://tally.tigerforge.io";
+        private const string OldApi = "https://tally-api.tigerforge.io";
+
+        private static TrayConfig WithHosts(string api, string ui)
+        {
+            TrayConfig c = Chosen();
+            c.Api = api;
+            c.Ui = ui;
+            return c;
+        }
+
+        [Fact]
+        public void The_move_from_Tallybook_replaces_the_two_old_hosts_and_touches_nothing_else()
+        {
+            using var dir = new TempDir();
+            string oldPath = System.IO.Path.Combine(dir.Path, "Tallybook", "config.json");
+            string newPath = System.IO.Path.Combine(dir.Path, "Crucible", "config.json");
+            var oldSeal = new FakeProtector("-tallybook");
+            var newSeal = new FakeProtector("-crucible");
+            ConfigStore.Save(oldPath, WithHosts(OldApi, OldUi), oldSeal);
+
+            TrayConfig moved = ConfigStore.MoveFromOldName(oldPath, oldSeal, newPath, newSeal)!;
+            TrayConfig back = ConfigStore.Load(newPath, newSeal)!;
+
+            foreach (TrayConfig c in new[] { moved, back })
+            {
+                Assert.Equal("https://crucible-api.tigerforge.io", c.Api);
+                Assert.Equal("https://crucible.tigerforge.io", c.Ui);
+                Assert.Equal("upl0ad-key-43-chars", c.UploadKey);
+                Assert.Equal("s3cr3t-client-secret", c.ClientSecret);
+                Assert.Equal(@"D:\Games\World of Warcraft", c.WowFolder);
+            }
+            Assert.Equal(OldUi, ConfigStore.Load(oldPath, oldSeal)!.Ui); // the old file is left as it was
+        }
+
+        [Fact]
+        public void The_move_from_Tallybook_leaves_another_host_port_and_scheme_alone()
+        {
+            using var dir = new TempDir();
+            string oldPath = System.IO.Path.Combine(dir.Path, "Tallybook", "config.json");
+            string newPath = System.IO.Path.Combine(dir.Path, "Crucible", "config.json");
+            var oldSeal = new FakeProtector("-tallybook");
+            var newSeal = new FakeProtector("-crucible");
+            ConfigStore.Save(oldPath, WithHosts("https://api.example.com", "https://tally.tigerforge.io:8443"), oldSeal);
+
+            TrayConfig moved = ConfigStore.MoveFromOldName(oldPath, oldSeal, newPath, newSeal)!;
+
+            Assert.Equal("https://api.example.com", moved.Api);
+            Assert.Equal("https://crucible.tigerforge.io:8443", moved.Ui);
+        }
+
+        [Fact]
+        public void A_host_that_only_contains_an_old_one_is_not_replaced()
+        {
+            TrayConfig c = WithHosts("https://not-tally-api.tigerforge.io", "https://tally.tigerforge.io.example.com");
+            Assert.False(ConfigStore.ReplaceOldHosts(c, false));
+            Assert.Equal("https://not-tally-api.tigerforge.io", c.Api);
+            Assert.Equal("https://tally.tigerforge.io.example.com", c.Ui);
+        }
+
+        [Fact]
+        public void A_config_that_already_went_across_with_exactly_the_two_old_hosts_is_rewritten_once()
+        {
+            TrayConfig c = WithHosts(OldApi, OldUi);
+            Assert.True(ConfigStore.ReplaceOldHosts(c, true));
+            Assert.Equal("https://crucible-api.tigerforge.io", c.Api);
+            Assert.Equal("https://crucible.tigerforge.io", c.Ui);
+            Assert.Equal("upl0ad-key-43-chars", c.UploadKey);
+            Assert.False(ConfigStore.ReplaceOldHosts(c, true)); // nothing fires again
+        }
+
+        [Theory]
+        [InlineData("https://crucible-api.tigerforge.io", "https://crucible.tigerforge.io")]
+        [InlineData("https://tally-api.tigerforge.io", "https://crucible.tigerforge.io")]
+        [InlineData("https://api.example.com", "https://tally.tigerforge.io")]
+        public void At_startup_nothing_changes_unless_both_hosts_are_exactly_the_old_two(string api, string ui)
+        {
+            TrayConfig c = WithHosts(api, ui);
+            Assert.False(ConfigStore.ReplaceOldHosts(c, true));
+            Assert.Equal(api, c.Api);
+            Assert.Equal(ui, c.Ui);
+        }
+
+        [Fact]
+        public void A_settings_file_the_member_loads_is_not_rewritten()
+        {
+            string json = Download.Replace("https://crucible-api.example.com", OldApi).Replace("https://crucible.example.com", OldUi);
+            TrayConfig c = ConfigStore.ImportDownload(json)!;
+            Assert.Equal(OldApi, c.Api);
+            Assert.Equal(OldUi, c.Ui);
+            TrayConfig saved = Chosen();
+            ConfigStore.ApplyCredentials(saved, c);
+            Assert.Equal(OldApi, saved.Api);
+            Assert.Equal(OldUi, saved.Ui);
         }
 
         [Fact]

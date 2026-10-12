@@ -53,6 +53,9 @@ namespace Crucible.Tray
             return true;
         }
 
+        /// <summary>Nothing is on offer for the person to fetch themselves (a signed build takes the update itself, spec 2026-10-12).</summary>
+        public void Withdraw() { Available = null; }
+
         /// <summary>The tooltip's first line while a newer version is on offer.</summary>
         public string? TooltipLine => Available == null ? null : "Update available: " + Available;
 

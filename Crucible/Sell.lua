@@ -155,7 +155,10 @@ function Sell.suggest(o)
     else
         return
     end
-    local silver = o.copper == false
+    -- Whole silver where copper is refused: a house without copper, and - on Forever - any UNSTACKABLE item,
+    -- whatever SupportsCopperValues says (a copper amount at the post is "Internal auction error."; found with
+    -- friends' posts 2026-10-12, beta forum thread 2353062). The game's own undercut step is one silver too.
+    local silver = o.copper == false or o.unstackable == true
     if silver then price = math.floor(price / 100) * 100 end
     local cut = plain(o.cut)
     if cut == nil then cut = plain(Logic.AH_CUT_PERCENT) or 0 end
@@ -200,7 +203,8 @@ end
 -- Everything the line says about one item, and the suggestion: { lowest, market, listed, price, from, floored }.
 -- The lowest and the listed count come from the same scan (Data.lua's pooled prices, or the player's own newer scan),
 -- and count only while it is younger than the data file's own age limit; the market value comes from Data.lua's stats.
-function Sell.quote(itemID)
+-- unstackable: the item sell frame's items (bags, gear, anything the house lists one at a time): whole silver.
+function Sell.quote(itemID, unstackable)
     local db = ns.db()
     local q = {}
     local at = whole(db.pricesAt, 1)
@@ -216,6 +220,7 @@ function Sell.quote(itemID)
         vendor = vendorPays(itemID),
         pct = ns.undercutPct(),
         copper = copperValues(),
+        unstackable = unstackable == true,
     })
     return q
 end
@@ -259,7 +264,7 @@ local function paintLine(state)
         state.line:Hide()
         return nil
     end
-    local q = Sell.quote(state.itemID)
+    local q = Sell.quote(state.itemID, state.unstackable)
     state.line:SetText(Sell.lineText(q))
     state.line:Show()
     return q
@@ -273,12 +278,12 @@ local function amountOf(frame)
     return nil
 end
 
-local function attachSellFrame(frame)
+local function attachSellFrame(frame, unstackable)
     if type(frame) ~= "table" or type(frame.SetItem) ~= "function" or type(frame.CreateFontString) ~= "function"
         or type(frame.PriceInput) ~= "table" then
         return
     end
-    local state = { frame = frame }
+    local state = { frame = frame, unstackable = unstackable == true }
     state.line = newLabel(frame, "GameFontHighlightSmall", "LEFT")
     -- Under the game's inputs: below its Post button, which is the last of them.
     state.line:SetPoint("TOP", frame.PostButton or frame, "BOTTOM", 0, -6)
@@ -793,8 +798,8 @@ function Sell.attach()
     local house = window()
     if not house then return end
     attached = true
-    pcall(attachSellFrame, house.ItemSellFrame)
-    pcall(attachSellFrame, house.CommoditiesSellFrame)
+    pcall(attachSellFrame, house.ItemSellFrame, true) -- unstackables: whole silver (see Sell.suggest)
+    pcall(attachSellFrame, house.CommoditiesSellFrame, false)
     if type(house.SetDisplayMode) == "function" then
         hooksecurefunc(house, "SetDisplayMode", guarded(function()
             if ns.Strip and ns.Strip.repaint then ns.Strip.repaint() end

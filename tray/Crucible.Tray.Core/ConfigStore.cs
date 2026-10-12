@@ -32,6 +32,7 @@ namespace Crucible.Tray
             [DataMember(Name = "paused", Order = 10, EmitDefaultValue = false)] public bool? Paused { get; set; }
             [DataMember(Name = "products", Order = 13, EmitDefaultValue = false)] public List<string?>? Products { get; set; }
             [DataMember(Name = "updateNudged", Order = 14, EmitDefaultValue = false)] public string? UpdateNudged { get; set; }
+            [DataMember(Name = "failedUpdate", Order = 15, EmitDefaultValue = false)] public string? FailedUpdate { get; set; }
         }
 
         /// <summary>The server's crucible.config.json. Null when it is not a complete one.</summary>
@@ -81,6 +82,7 @@ namespace Crucible.Tray
                 Paused = c.Paused,
                 Products = new List<string?>(c.Products),
                 UpdateNudged = c.NudgedVersion.Length == 0 ? null : c.NudgedVersion,
+                FailedUpdate = c.FailedUpdateVersion.Length == 0 ? null : c.FailedUpdateVersion,
             };
             string? dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
@@ -105,8 +107,38 @@ namespace Crucible.Tray
             }
             TrayConfig? old = Load(oldPath, oldProtector);
             if (old == null) return null;
+            ReplaceOldHosts(old, false);
             Save(newPath, old, newProtector);
             return old;
+        }
+
+        private const string OldUiHost = "tally.tigerforge.io";
+        private const string OldApiHost = "tally-api.tigerforge.io";
+        private const string NewUiHost = "crucible.tigerforge.io";
+        private const string NewApiHost = "crucible-api.tigerforge.io";
+
+        /// <summary>
+        /// The rename's addresses (2026-10-04): the two old hostnames are replaced by the new ones, matched as the whole host
+        /// (scheme, port and path stay; any other host is left alone). Used only on a config the program itself carried over
+        /// from the old name, never on one the member loaded. With <paramref name="bothMustBeOld"/> nothing changes unless
+        /// BOTH addresses are exactly the two old ones (the 0.99.1 config that already went across). True when it changed
+        /// something. Remove at 1.0.0 with the old hostnames.
+        /// </summary>
+        public static bool ReplaceOldHosts(TrayConfig c, bool bothMustBeOld)
+        {
+            string? api = WithHost(c.Api, OldApiHost, NewApiHost);
+            string? ui = WithHost(c.Ui, OldUiHost, NewUiHost);
+            if (bothMustBeOld && (api == null || ui == null)) return false;
+            if (api != null) c.Api = api;
+            if (ui != null) c.Ui = ui;
+            return api != null || ui != null;
+        }
+
+        /// <summary>The address with its host replaced, or null when its host is not exactly <paramref name="from"/>.</summary>
+        private static string? WithHost(string url, string from, string to)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? u) || u.Host != from) return null;
+            return new UriBuilder(u) { Host = to }.Uri.AbsoluteUri.TrimEnd('/');
         }
 
         /// <summary>
@@ -146,6 +178,7 @@ namespace Crucible.Tray
             Products = ForeverProducts.Choose(ForeverProducts.Default, s.Products),
             // Only ever shown and compared, but a hand-edited file may hold anything: what is not a version is none.
             NudgedVersion = UpdateNudge.IsVersion(s.UpdateNudged) ? s.UpdateNudged! : "",
+            FailedUpdateVersion = UpdateNudge.IsVersion(s.FailedUpdate) ? s.FailedUpdate! : "",
         };
 
         private static string? Open(string? stored, ISecretProtector protector)

@@ -1,0 +1,12 @@
+Crucible changelog - newest first. Features inside the notice's scope are listed here (notice version 6).
+
+0.99.4 - the tray app keeps itself up to date: within six hours of a new build it replaces itself at a quiet
+         moment and says so once. Only a build signed by the same publisher is ever taken, checked by Windows
+         before it runs. Download the tray one more time for this; after that, never again.
+0.99.3 - the quest recorder: on your own actions the addon notes quest givers, objectives, turn-ins, trainers,
+         vendors, flight masters and innkeepers with your map position, for the group's own quest map.
+         Off switch: "Record my quests" on Your PCs. Nothing comes back into the game yet.
+         Fix: the Sell tab's suggested price for an unstackable item (gear, bags) is whole silver - Forever's
+         house refuses a copper amount on those with "Internal auction error."; stackables keep the copper.
+0.99.2 - the tray's migrated config gets the new hostnames.
+0.99.1 - Crucible: the Tallybook rename, posting help, the undercut list, Search All, mail auto-take, the in-game ledger.

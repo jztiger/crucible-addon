@@ -23,6 +23,19 @@ namespace Crucible.Tray.Tests
         }
 
         [Fact]
+        public void Withdrawn_means_nothing_is_on_offer_until_the_next_answer_says_otherwise()
+        {
+            // Review I4(c): a signed build that will fetch the update itself takes the badge and the menu line down.
+            var nudge = new UpdateNudge("0.4.0", null);
+            Assert.True(nudge.Offer("0.4.1"));
+            nudge.Withdraw();
+            Assert.Null(nudge.Available);
+            Assert.Null(nudge.TooltipLine);
+            Assert.False(nudge.Offer("0.4.1")); // the balloon for 0.4.1 was already shown
+            Assert.Equal("0.4.1", nudge.Available);
+        }
+
+        [Fact]
         public void A_new_version_shows_a_balloon_once_and_stays_in_the_tooltip_and_the_menu()
         {
             var nudge = new UpdateNudge("0.4.0", null);

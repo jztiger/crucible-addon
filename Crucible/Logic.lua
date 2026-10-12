@@ -9,7 +9,7 @@ ns = ns or {}
 local L = {}
 ns.Logic = L
 
-L.VERSION = "0.99.1"
+L.VERSION = "0.99.3"
 -- Two independent version counters, mirroring the server (src/shared/scan-schema.ts SCAN_SCHEMA_VERSION,
 -- src/shared/ref-doc.ts REF_SCHEMA_VERSION): the scan document's shape (replicate, browse) has not changed
 -- since M1, so buildDoc still tags SCAN_SCHEMA; the reference document gained items, suffixes and named
@@ -559,6 +559,13 @@ function L.initDB(db)
     if type(db.sales) ~= "table" then db.sales = {} end
     if type(db.market) ~= "table" then db.market = {} end
     if type(db.sells) ~= "table" then db.sells = {} end
+    -- The quest library (spec 2026-10-11): this session's sightings, serialized by Export.saveQuest at each write.
+    -- Never read back (nothing in the saved file is), so a fresh table every session is the truth.
+    if type(db.quest) ~= "table" then db.quest = {} end
+    for _, k in ipairs({ "offers", "accepts", "ticks", "turnins", "npcs", "done" }) do
+        if type(db.quest[k]) ~= "table" then db.quest[k] = {} end
+    end
+    if type(db.quest.seenOffer) ~= "table" then db.quest.seenOffer = {} end
     -- where the prices came from when not from this session's own scan: the data file's "saved" or "shared"
     if db.pricesFrom ~= "saved" and db.pricesFrom ~= "shared" then db.pricesFrom = nil end
     return db
@@ -1745,6 +1752,148 @@ function L.formatMoney(copper)
     if s > 0 then parts[#parts + 1] = string.format("%.0f", s) .. "s" end
     if c > 0 or #parts == 0 then parts[#parts + 1] = string.format("%.0f", c) .. "c" end
     return table.concat(parts, " ")
+end
+
+---------------------------------------------------------------------------------------------------
+-- The quest library (spec 2026-10-11-quest-library-design.md, section 3): what the player saw of quests and
+-- NPCs this session, on their own actions. Pure bookkeeping here; Quest.lua does the reading and Export.saveQuest
+-- the writing. Mirrors src/shared/quest-doc.ts, whose ceilings these are (a test holds the two together).
+---------------------------------------------------------------------------------------------------
+L.MAX_QUEST_ROWS = 2000
+L.MAX_OBJECTIVES = 16
+L.QUEST_MAX_BYTES = 2 * 1024 * 1024
+local NPC_KINDS = { trainer = true, vendor = true, flight = true, inn = true }
+
+-- The client's 0..1 map fraction -> an integer 0..10000; anything else -> nil (never a float in the document).
+function L.toCoord(f)
+    if type(f) ~= "number" or f ~= f or f < 0 or f > 1 then return nil end
+    return math.floor(f * 10000 + 0.5)
+end
+
+-- Cut to the byte ceiling on a UTF-8 boundary: a character split in two would make the server refuse the whole
+-- document (its decoder is strict), so the partial character is dropped instead.
+local function cutName(s)
+    if type(s) ~= "string" or s == "" then return nil end
+    local n = L.MAX_NAME_CHARS
+    if #s <= n then return s end
+    local i = n
+    while i > 0 and string.byte(s, i) >= 0x80 and string.byte(s, i) < 0xC0 do i = i - 1 end
+    local b = i > 0 and string.byte(s, i) or 0
+    if b >= 0xC0 then
+        -- i is a lead byte: keep the cut at n when its whole character fits, else cut before it.
+        local len = (b >= 0xF0 and 4) or (b >= 0xE0 and 3) or 2
+        return string.sub(s, 1, i + len - 1 <= n and n or i - 1)
+    end
+    return string.sub(s, 1, n)
+end
+
+local function questRoom(list) return type(list) == "table" and #list < L.MAX_QUEST_ROWS end
+local function okPos(mapID, x, y, t)
+    return isCount(mapID, 1) and isCount(x, 0) and x <= 10000 and isCount(y, 0) and y <= 10000 and isCount(t, 0)
+end
+
+-- One giver sighting per quest per session is plenty: a repeat of the same offer is folded into the first.
+function L.noteOffer(q, questID, title, npcName, mapID, x, y, t)
+    title, npcName = cutName(title), cutName(npcName)
+    if not (type(q) == "table" and isCount(questID, 1) and title and npcName and okPos(mapID, x, y, t)) then
+        return false
+    end
+    if q.seenOffer[questID] or not questRoom(q.offers) then return false end
+    q.seenOffer[questID] = true
+    q.offers[#q.offers + 1] = { questID, title, npcName, mapID, x, y, t }
+    return true
+end
+
+function L.noteAccept(q, questID, level, objectives, mapID, x, y, t)
+    if not (type(q) == "table" and isCount(questID, 1) and okPos(mapID, x, y, t) and questRoom(q.accepts)) then
+        return false
+    end
+    local lines = {}
+    if type(objectives) == "table" then
+        for i = 1, #objectives do
+            if #lines >= L.MAX_OBJECTIVES then break end
+            lines[#lines + 1] = cutName(objectives[i]) or ""
+        end
+    end
+    q.accepts[#q.accepts + 1] = { questID, isCount(level, 0) and level or 0, lines, mapID, x, y, t }
+    return true
+end
+
+-- before/after: arrays of { text, fulfilled } in objective order. One tick per index whose count ROSE: a fall
+-- (an abandoned quest taken again) and a repeat of the same counts write nothing. NO `before` means this is the
+-- first sight of the quest's counts this session (login, or the first log change after a Sync): whatever it already
+-- has was earned somewhere else, so that is a baseline, never a tick (review 2026-10-11, Critical 1).
+function L.noteTicks(q, questID, before, after, mapID, x, y, t)
+    if not (type(q) == "table" and isCount(questID, 1) and type(after) == "table" and okPos(mapID, x, y, t)) then
+        return 0
+    end
+    if type(before) ~= "table" then return 0 end
+    local n = 0
+    for i = 1, #after do
+        if i > L.MAX_OBJECTIVES or not questRoom(q.ticks) then break end
+        local was = type(before) == "table" and type(before[i]) == "table" and before[i].fulfilled or 0
+        local now = type(after[i]) == "table" and after[i].fulfilled or 0
+        if type(now) == "number" and type(was) == "number" and now > was then
+            q.ticks[#q.ticks + 1] = { questID, i, cutName(after[i].text) or "", mapID, x, y, t }
+            n = n + 1
+        end
+    end
+    return n
+end
+
+-- The completion needs only the quest id and the time; the turn-in POSITION also needs the NPC and a readable
+-- position (an instance or combat has neither), so the done row is written first and on its own.
+-- -> true when a turn-in row was written (the done row may have been written either way)
+function L.noteTurnin(q, questID, npcName, mapID, x, y, t)
+    if not (type(q) == "table" and isCount(questID, 1) and isCount(t, 0)) then return false end
+    if questRoom(q.done) then q.done[#q.done + 1] = { questID, t } end
+    npcName = cutName(npcName)
+    if not (npcName and okPos(mapID, x, y, t) and questRoom(q.turnins)) then return false end
+    q.turnins[#q.turnins + 1] = { questID, npcName, mapID, x, y, t }
+    return true
+end
+
+function L.noteNpc(q, npcName, kind, mapID, x, y, t)
+    npcName = cutName(npcName)
+    if not (type(q) == "table" and npcName and NPC_KINDS[kind] and okPos(mapID, x, y, t) and questRoom(q.npcs)) then
+        return false
+    end
+    q.npcs[#q.npcs + 1] = { npcName, kind, mapID, x, y, t }
+    return true
+end
+
+-- Recording needs two things from the member's own Data.lua (written by the server from what their tray said):
+-- the notice they accepted is version 6 or later - the one that names the quest library (spec section 5) - and
+-- the "Record my quests" switch is not off. A file with neither (an older server, the local bake, no tray) records
+-- nothing, the same rule Sell.allowed keeps for posting help.
+L.QUEST_NOTICE_MIN = 6
+function L.recordsQuests(baked)
+    if type(baked) ~= "table" or baked.recordQuests == false then return false end
+    local v = baked.acceptedNotice
+    return type(v) == "number" and v == math.floor(v) and v >= L.QUEST_NOTICE_MIN
+end
+
+-- -> the schema-1 quest document, or nil when the session saw nothing. `charHash` is L.charHash's output.
+function L.questDoc(db, at, meta, charHash)
+    if type(db) ~= "table" or type(db.quest) ~= "table" then return nil end
+    local q = db.quest
+    if #q.offers + #q.accepts + #q.ticks + #q.turnins + #q.npcs + #q.done == 0 then return nil end
+    if type(charHash) ~= "string" or not string.match(charHash, "^[0-9a-f]+$") or #charHash ~= 16 then return nil end
+    local doc = { schema = 1, kind = "quest", at = at, char = charHash,
+        offers = q.offers, accepts = q.accepts, ticks = q.ticks, turnins = q.turnins, npcs = q.npcs, done = q.done }
+    if type(meta) == "table" then
+        if type(meta.region) == "number" then doc.region = meta.region end
+        if type(meta.realm) == "string" then doc.realm = cutName(meta.realm) end
+        if type(meta.faction) == "string" then doc.faction = cutName(meta.faction) end
+    end
+    return doc
+end
+
+-- -> "q1:<b64>"   (its own tag: the server's extractors look for "j1:", "r4:" and "q1:" each on their own)
+function L.questTag(b64) return "q1:" .. tostring(b64) end
+function L.questOf(text)
+    if type(text) ~= "string" then return nil end
+    return string.match(text, "^q1:([A-Za-z0-9+/=]+)$")
 end
 
 return L

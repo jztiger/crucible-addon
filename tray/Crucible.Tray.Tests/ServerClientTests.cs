@@ -259,6 +259,46 @@ namespace Crucible.Tray.Tests
             Assert.Equal("https://crucible-api.example.com/api/v1/tray/version", server.Requests[0].Url);
         }
 
+        [Fact]
+        public async Task The_tray_on_offer_carries_its_hash_and_publisher()
+        {
+            var server = new FakeServer { Answer = _ => FakeServer.Status(200, "{\"version\":\"0.99.5\",\"addon\":\"0.99.3\",\"sha256\":\"" + new string('a', 64) + "\",\"publisher\":\"Jason Howard\"}") };
+            ServerClient.TrayOffer? offer = await new ServerClient(Config(), server).LatestTrayAsync();
+            Assert.NotNull(offer);
+            Assert.Equal("0.99.5", offer!.Version);
+            Assert.Equal(new string('a', 64), offer.Sha256);
+            Assert.Equal("Jason Howard", offer.Publisher);
+            // An unshaped hash or version is dropped, not trusted.
+            server.Answer = _ => FakeServer.Status(200, "{\"version\":\"0.99.5\",\"sha256\":\"xyz\"}");
+            ServerClient.TrayOffer? odd = await new ServerClient(Config(), server).LatestTrayAsync();
+            Assert.Equal("0.99.5", odd!.Version);
+            Assert.Null(odd.Sha256);
+            server.Answer = _ => FakeServer.Status(503);
+            Assert.Null(await new ServerClient(Config(), server).LatestTrayAsync());
+        }
+
+        [Fact]
+        public async Task Fetching_the_tray_takes_the_bytes_as_they_are_and_refuses_a_redirect_or_a_missing_build()
+        {
+            byte[] exe = new byte[3000];
+            exe[0] = (byte)'M'; exe[1] = (byte)'Z';
+            var server = new FakeServer { Answer = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(exe) } };
+            var client = new ServerClient(Config(), server);
+            (FetchResult result, byte[]? body) = await client.FetchTrayAsync();
+            Assert.Equal(FetchResult.Changed, result);
+            Assert.Equal(exe, body);
+            Assert.Equal("https://crucible-api.example.com/api/v1/tray/Crucible.exe", server.Requests[0].Url);
+            Assert.StartsWith("Crucible-Tray/", server.Requests[0].Headers["User-Agent"]);
+
+            server.Answer = _ => { var r = new HttpResponseMessage(HttpStatusCode.Found); r.Headers.Location = new Uri("https://elsewhere.example.com/x.exe"); return r; };
+            Assert.Equal(FetchResult.Refused, (await client.FetchTrayAsync()).result);
+            server.Answer = _ => FakeServer.Status(409, "{\"error\":\"not_available\"}");
+            Assert.Equal(FetchResult.Failed, (await client.FetchTrayAsync()).result);
+            Assert.DoesNotContain("not_available", client.LastError); // the server's words never reach the log
+            server.Answer = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[SelfUpdate.MaxBytes + 1]) };
+            Assert.Equal(FetchResult.Invalid, (await client.FetchTrayAsync()).result);
+        }
+
         [Theory]
         [InlineData("0.1.0", "0.2.0", true)]
         [InlineData("0.1.0", "0.1.0", false)]

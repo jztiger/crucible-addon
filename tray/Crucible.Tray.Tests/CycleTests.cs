@@ -102,9 +102,38 @@ namespace Crucible.Tray.Tests
             Cycle = NewCycle();
         }
 
+        /// <summary>Spec 2026-10-12: the running exe and the shell's signature check, when a test sets them.</summary>
+        public string? ExePath;
+        public FakeSigner Signer = new FakeSigner();
+
         /// <summary>As after a restart: nothing in memory, the sent log and the files still there.</summary>
         public Cycle NewCycle() =>
-            new Cycle(Config, new ServerClient(Config, Server), new SentLog(Dir.File("sent.txt")), new Stability(), new TrayLog(LogFile), () => Now);
+            new Cycle(Config, new ServerClient(Config, Server), new SentLog(Dir.File("sent.txt")), new Stability(), new TrayLog(LogFile), () => Now, ExePath, ExePath == null ? null : Signer);
+
+        public string[] Log() => File.Exists(LogFile) ? File.ReadAllLines(LogFile) : new string[0];
+
+        /// <summary>A pretend program: the PE header and some bytes.</summary>
+        public static byte[] Exe(int size) { var b = new byte[size]; b[0] = (byte)'M'; b[1] = (byte)'Z'; return b; }
+
+        public static SignerInfo Ours(string version) => new SignerInfo(AppInfo.Publisher, "CN=Jason Howard, O=Jason Howard, C=US", version);
+
+        /// <summary>Puts a running exe on disk and makes the server offer `version` with `fresh` as the download.</summary>
+        public void OfferTray(byte[] fresh, string version, string? sha = null)
+        {
+            ExePath = Dir.File("Crucible.exe");
+            File.WriteAllBytes(ExePath, Exe(100));
+            Signer.Signers[ExePath] = Ours(AppInfo.Version);
+            Func<FakeServer.Seen, HttpResponseMessage> inner = Server.Answer;
+            Server.Answer = r =>
+            {
+                if (r.Url.EndsWith("/api/v1/tray/version", StringComparison.Ordinal))
+                    return FakeServer.Status(200, "{\"version\":\"" + version + "\",\"sha256\":\"" + (sha ?? SelfUpdate.Sha256Hex(fresh)) + "\",\"publisher\":\"Jason Howard\"}");
+                if (r.Url.EndsWith("/api/v1/tray/Crucible.exe", StringComparison.Ordinal))
+                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(fresh) };
+                return inner(r);
+            };
+            Cycle = NewCycle();
+        }
 
         public void Save(string content) { File.WriteAllText(Saved, content); }
 
@@ -120,8 +149,128 @@ namespace Crucible.Tray.Tests
         public void Dispose() { Dir.Dispose(); }
     }
 
+    internal sealed class FakeSigner : ISigner
+    {
+        public Dictionary<string, SignerInfo?> Signers = new Dictionary<string, SignerInfo?>(StringComparer.OrdinalIgnoreCase);
+        public int Calls;
+        public SignerInfo? SignerOf(string path) { Calls++; return Signers.TryGetValue(path, out SignerInfo? s) ? s : null; }
+    }
+
     public class CycleTests
     {
+        // ---- spec 2026-10-12: the tray keeps itself current ------------------------------------------------------
+
+        [Fact]
+        public async Task A_newer_signed_tray_is_fetched_verified_and_staged_beside_the_exe()
+        {
+            using var w = new World();
+            byte[] fresh = World.Exe(5000);
+            w.OfferTray(fresh, "9.9.9");
+            w.Signer.Signers[w.ExePath + ".new"] = World.Ours("9.9.9");
+
+            CycleReport r = await w.Cycle.RunAsync(true);
+            Assert.Equal("9.9.9", r.TrayStaged);
+            Assert.Null(r.TrayUpdateFailed);
+            Assert.Equal("9.9.9", w.Cycle.StagedVersion);
+            Assert.Equal(fresh, File.ReadAllBytes(w.ExePath + ".new"));
+            Assert.Contains(w.Log(), l => l.Contains("tray 9.9.9 staged"));
+            Assert.DoesNotContain(w.Log(), l => l.Contains(w.Dir.Path)); // a path is never logged
+            // The next pass does not fetch again: the file is there.
+            int before = w.Server.Requests.Count;
+            await w.Cycle.RunAsync(true);
+            Assert.DoesNotContain(w.Server.Requests.Skip(before), q => q.Url.EndsWith("/Crucible.exe", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("sha", Refusal.ShaMismatch)]
+        [InlineData("signer", Refusal.WrongPublisher)]
+        [InlineData("nosig", Refusal.BadSignature)]
+        [InlineData("subject", Refusal.DifferentSigner)]
+        [InlineData("version", Refusal.VersionMismatch)]
+        public async Task A_download_that_fails_a_check_is_deleted_and_the_version_is_remembered_as_failed(string how, Refusal expected)
+        {
+            using var w = new World();
+            byte[] fresh = World.Exe(5000);
+            w.OfferTray(fresh, "9.9.9", how == "sha" ? new string('b', 64) : null);
+            string staged = w.ExePath + ".new";
+            if (how == "sha") w.Signer.Signers[staged] = World.Ours("9.9.9");
+            if (how == "signer") w.Signer.Signers[staged] = new SignerInfo("Somebody Else", "CN=Somebody Else", "9.9.9");
+            if (how == "nosig") w.Signer.Signers[staged] = null;
+            if (how == "subject") w.Signer.Signers[staged] = new SignerInfo(AppInfo.Publisher, "CN=Jason Howard, O=Elsewhere Ltd, C=GB", "9.9.9");
+            if (how == "version") w.Signer.Signers[staged] = World.Ours("0.1.0");
+
+            CycleReport r = await w.Cycle.RunAsync(true);
+            Assert.Null(r.TrayStaged);
+            Assert.Equal(expected, r.TrayUpdateFailed);
+            Assert.False(File.Exists(staged));
+            Assert.Equal("9.9.9", w.Config.FailedUpdateVersion);
+            Assert.Contains(w.Log(), l => l.Contains("tray 9.9.9 refused: " + expected));
+            int before = w.Server.Requests.Count;
+            await w.Cycle.RunAsync(true); // forced again: the failed version is not fetched a second time
+            Assert.DoesNotContain(w.Server.Requests.Skip(before), q => q.Url.EndsWith("/Crucible.exe", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public async Task An_unsigned_running_build_never_asks_for_the_exe()
+        {
+            using var w = new World();
+            w.OfferTray(World.Exe(5000), "9.9.9");
+            w.Signer.Signers[w.ExePath!] = null; // SignerOf(exe) -> null: a local build
+            CycleReport r = await w.Cycle.RunAsync(true);
+            Assert.Null(r.TrayStaged);
+            Assert.DoesNotContain(w.Server.Requests, q => q.Url.EndsWith("/Crucible.exe", StringComparison.Ordinal));
+            Assert.False(File.Exists(w.ExePath + ".new"));
+        }
+
+        [Fact]
+        public async Task A_folder_that_cannot_be_written_fails_the_staging_and_keeps_the_old_exe()
+        {
+            using var w = new World();
+            w.OfferTray(World.Exe(5000), "9.9.9");
+            Directory.CreateDirectory(w.ExePath + ".new"); // a directory where the staged file must go: the write throws
+            CycleReport r = await w.Cycle.RunAsync(true);
+            Assert.Equal(Refusal.StagingFailed, r.TrayUpdateFailed);
+            Assert.Equal("9.9.9", w.Config.FailedUpdateVersion);
+            Assert.Equal(World.Exe(100), File.ReadAllBytes(w.ExePath!));
+            Assert.Contains(w.Log(), l => l.Contains("tray 9.9.9 could not be staged: "));
+        }
+
+        [Fact]
+        public async Task Three_checks_that_cannot_get_the_exe_mark_the_update_stalled_so_the_nudge_can_take_over()
+        {
+            // Review I4(a): a 404 on the exe route (a Cloudflare rule, say) is not a verification failure and is retried;
+            // after three misses the shell is told, so the person is sent to the download page instead of waiting forever.
+            using var w = new World();
+            w.OfferTray(World.Exe(5000), "9.9.9");
+            Func<FakeServer.Seen, HttpResponseMessage> inner = w.Server.Answer;
+            w.Server.Answer = r => r.Url.EndsWith("/api/v1/tray/Crucible.exe", StringComparison.Ordinal) ? FakeServer.Status(404) : inner(r);
+            for (int i = 1; i <= 2; i++)
+            {
+                await w.Cycle.RunAsync(true);
+                Assert.False(w.Cycle.TrayStalled);
+            }
+            await w.Cycle.RunAsync(true);
+            Assert.True(w.Cycle.TrayStalled);
+            Assert.Equal("", w.Config.FailedUpdateVersion); // not a failed version: it is still tried on the cadence
+            // A fetch that gets through clears it.
+            w.Server.Answer = inner;
+            w.Signer.Signers[w.ExePath + ".new"] = World.Ours("9.9.9");
+            CycleReport r = await w.Cycle.RunAsync(true);
+            Assert.Equal("9.9.9", r.TrayStaged);
+            Assert.False(w.Cycle.TrayStalled);
+        }
+
+        [Fact]
+        public async Task An_older_or_equal_tray_on_offer_is_left_alone()
+        {
+            using var w = new World();
+            w.OfferTray(World.Exe(5000), "0.0.1");
+            CycleReport r = await w.Cycle.RunAsync(true);
+            Assert.Null(r.TrayStaged);
+            Assert.Null(r.TrayUpdateFailed);
+            Assert.DoesNotContain(w.Server.Requests, q => q.Url.EndsWith("/Crucible.exe", StringComparison.Ordinal));
+        }
+
         [Fact]
         public async Task A_new_saved_file_is_sent_once_it_is_quiet_and_the_data_file_comes_back()
         {

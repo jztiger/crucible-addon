@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -23,19 +24,31 @@ namespace Crucible.Tray
             Dictionary<string, string> opts = Options(args);
             if (opts.ContainsKey("--version")) return Say(opts, 0, AppInfo.Name + " tray " + AppInfo.Version + " on " + Environment.OSVersion.VersionString + ", .NET Framework " + Environment.Version);
             if (opts.ContainsKey("--selftest")) return SelfTest(opts);
+            // What the self-update's signature check reads off a file (spec 2026-10-12): for the UAT and for support.
+            if (opts.TryGetValue("--signer", out string? signedFile) && signedFile.Length > 0)
+            {
+                SignerInfo? s = new Authenticode().SignerOf(signedFile);
+                return Say(opts, s == null ? 1 : 0, s == null ? "no valid signature" : "signer: " + s.SimpleName + " | subject: " + s.Subject + " | file version: " + s.FileVersion
+                    + " | as an update of this build: " + SelfUpdate.CheckSigner(s, s, AppInfo.Version));
+            }
             if (opts.ContainsKey("--once")) return Once(opts);
-            if (args.Length > 0) return Say(opts, 1, "usage: Crucible.exe [--version | --selftest | --once --config <file> --wow <folder>] [--out <file>]");
-            return RunTray();
+            if (args.Length > 0 && !opts.ContainsKey("--after-update")) return Say(opts, 1, "usage: Crucible.exe [--version | --selftest | --signer <file> | --once --config <file> --wow <folder> | --after-update <version>] [--out <file>]");
+            return RunTray(opts);
         }
 
-        private static int RunTray()
+        private static int RunTray(Dictionary<string, string> opts)
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             if (!SystemInformation.UserInteractive) return 1; // no desktop, no icon: it never runs unseen
 
-            using (var single = new Mutex(true, @"Local\Crucible.Tray", out bool first))
+            // Spec 2026-10-12: started by the copy it replaces, which is on its way out and still holds the lock.
+            string? updatedFrom = opts.TryGetValue("--after-update", out string? from) && UpdateNudge.IsVersion(from) ? from : null;
+            using (var single = new Mutex(false, @"Local\Crucible.Tray"))
             {
+                bool first;
+                try { first = single.WaitOne(updatedFrom != null ? TimeSpan.FromSeconds(15) : TimeSpan.Zero); }
+                catch (AbandonedMutexException) { first = true; }
                 if (!first)
                 {
                     MessageBox.Show("Crucible is already running - look for its icon next to the clock.", AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -93,7 +106,7 @@ namespace Crucible.Tray
 
                 try
                 {
-                    using (var app = new TrayApp(config, protector, log)) Application.Run(app);
+                    using (var app = new TrayApp(config, protector, log, updatedFrom)) Application.Run(app);
                 }
                 catch (InvalidOperationException e)
                 {
@@ -128,6 +141,17 @@ namespace Crucible.Tray
         private static TrayConfig? LoadConfig(ISecretProtector protector, TrayLog log)
         {
             TrayConfig? saved = ConfigStore.Load(Paths.Config, protector);
+            if (saved != null && ConfigStore.ReplaceOldHosts(saved, true))
+            {
+                // 0.99.1 carried the Tallybook config across with its old addresses: exactly those two, replaced once.
+                // Done before a settings file beside the exe is looked at - that file is the member's and is never rewritten.
+                try { ConfigStore.Save(Paths.Config, saved, protector); }
+                catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+                {
+                    log.Write("could not save the new addresses: " + e.GetType().Name);
+                }
+                log.Write("settings: the old addresses were replaced by the new ones");
+            }
             if (saved == null)
             {
                 // The rename (2026-10-04, remove at 1.0.0): a PC that ran Tallybook keeps its folder, switches and
@@ -135,6 +159,8 @@ namespace Crucible.Tray
                 try
                 {
                     saved = ConfigStore.MoveFromOldName(Paths.OldConfig, Dpapi.OldName(), Paths.Config, protector);
+                    if (saved != null && (new Uri(saved.Api).Host == "crucible-api.tigerforge.io" || new Uri(saved.Ui).Host == "crucible.tigerforge.io"))
+                        log.Write("settings: the old addresses were replaced by the new ones");
                     if (saved != null) log.Write("took the settings Tallybook, this program's old name, had saved; its file is left where it was");
                 }
                 catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
@@ -279,6 +305,35 @@ namespace Crucible.Tray
                 SetupForm.NoticeText().Contains("THE RISK")
                 && SetupForm.NoticeText().Contains("not made, approved or supported by Blizzard")
                 && Notice.VersionOf(SetupForm.NoticeText()) > 0);
+
+            Check("this build's own signature is read: a signed build names its publisher, an unsigned one names nobody", () =>
+            {
+                SignerInfo? signer = new Authenticode().SignerOf(Paths.Exe);
+                // CI runs this on the signed exe and expects the publisher; a local build is unsigned and expects null.
+                bool signed = Environment.GetEnvironmentVariable("CRUCIBLE_SELFTEST_SIGNED") == "1";
+                lines.Add("     signer: " + (signer == null ? "(none)" : signer.SimpleName + " · " + signer.Subject + " · file version " + signer.FileVersion));
+                return signed ? signer != null && signer.SimpleName == AppInfo.Publisher && SelfUpdate.CheckSigner(signer, signer, AppInfo.Version) == Refusal.Ok : signer == null;
+            });
+            Check("the swap's renames work on a copy of this exe while that copy is running", () =>
+            {
+                string dir = Path.Combine(Path.GetTempPath(), "crucible-selftest-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(dir);
+                try
+                {
+                    UpdatePaths p = SelfUpdate.Plan(Path.Combine(dir, "Crucible.exe"));
+                    File.Copy(Paths.Exe, p.Exe);
+                    File.Copy(Paths.Exe, p.Staged);
+                    using (Process running = Process.Start(new ProcessStartInfo(p.Exe, "--version --out \"" + Path.Combine(dir, "v.txt") + "\"") { UseShellExecute = false, CreateNoWindow = true }))
+                    {
+                        // A running exe can be renamed on NTFS, and the staged one moved under its name.
+                        File.Move(p.Exe, p.Old);
+                        File.Move(p.Staged, p.Exe);
+                        running.WaitForExit(30000);
+                    }
+                    return File.Exists(p.Exe) && File.Exists(p.Old) && !File.Exists(p.Staged);
+                }
+                finally { try { Directory.Delete(dir, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+            });
 
             lines.Add(ok ? "selftest ok" : "selftest FAILED");
             return Say(opts, ok ? 0 : 1, string.Join(Environment.NewLine, lines));

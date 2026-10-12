@@ -194,14 +194,21 @@ namespace Crucible.Tray
             }
         }
 
+        /// <summary>What the server has on offer for the tray app (GET /api/v1/tray/version).</summary>
         [DataContract]
-        private sealed class VersionAnswer
+        public sealed class TrayOffer
         {
             [DataMember(Name = "version")] public string? Version { get; set; }
+            /// <summary>Hex SHA-256 of the exe on offer; the download is checked against it before anything else.</summary>
+            [DataMember(Name = "sha256")] public string? Sha256 { get; set; }
+            /// <summary>Who signed it, for the log only: the name the tray trusts is AppInfo.Publisher.</summary>
+            [DataMember(Name = "publisher")] public string? Publisher { get; set; }
         }
 
-        /// <summary>The tray app version the server has on offer, or null. Only ever shown; nothing is downloaded.</summary>
-        public async Task<string?> LatestVersionAsync()
+        private static readonly Regex HexSha = new Regex(@"^[0-9a-fA-F]{64}\z", RegexOptions.CultureInvariant);
+
+        /// <summary>The tray on offer, or null when the server gave no usable answer. Fields not shaped as expected are dropped.</summary>
+        public async Task<TrayOffer?> LatestTrayAsync()
         {
             using (var request = Request(HttpMethod.Get, "/api/v1/tray/version"))
             {
@@ -211,13 +218,53 @@ namespace Crucible.Tray
                     {
                         if ((int)response.StatusCode != 200) return null;
                         byte[]? body = await ReadCapped(response.Content, 4096).ConfigureAwait(false);
-                        string? version = body == null ? null : Json.Read<VersionAnswer>(Encoding.UTF8.GetString(body))?.Version;
-                        return version != null && Regex.IsMatch(version, @"^\d{1,4}\.\d{1,4}\.\d{1,4}$") ? version : null;
+                        TrayOffer? offer = body == null ? null : Json.Read<TrayOffer>(Encoding.UTF8.GetString(body));
+                        if (offer == null) return null;
+                        if (!UpdateNudge.IsVersion(offer.Version)) offer.Version = null;
+                        if (offer.Sha256 == null || !HexSha.IsMatch(offer.Sha256)) offer.Sha256 = null;
+                        if (offer.Publisher != null && offer.Publisher.Length > 64) offer.Publisher = null;
+                        return offer;
                     }
                 }
                 catch (Exception e) when (e is HttpRequestException || e is TaskCanceledException || e is IOException)
                 {
                     return null;
+                }
+            }
+        }
+
+        /// <summary>The tray app version the server has on offer, or null (M112's nudge reads this).</summary>
+        public async Task<string?> LatestVersionAsync() => (await LatestTrayAsync().ConfigureAwait(false))?.Version;
+
+        /// <summary>
+        /// The program itself (spec 2026-10-12): the bytes as served, capped, no redirect followed. The caller verifies
+        /// them (SelfUpdate.Verify, then the shell's signature check) before they are ever written beside the exe.
+        /// </summary>
+        public async Task<(FetchResult result, byte[]? body)> FetchTrayAsync()
+        {
+            using (var request = Request(HttpMethod.Get, "/api/v1/tray/Crucible.exe"))
+            {
+                try
+                {
+                    using (HttpResponseMessage response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false))
+                    {
+                        int status = (int)response.StatusCode;
+                        LastError = status == 200 ? "" : "the tray on offer answered " + status;
+                        if (IsRefusal(status)) return (FetchResult.Refused, null);
+                        if (status != 200) return (FetchResult.Failed, null);
+                        byte[]? body = await ReadCapped(response.Content, SelfUpdate.MaxBytes).ConfigureAwait(false);
+                        if (body == null)
+                        {
+                            LastError = "the tray on offer was too large";
+                            return (FetchResult.Invalid, null);
+                        }
+                        return (FetchResult.Changed, body);
+                    }
+                }
+                catch (Exception e) when (e is HttpRequestException || e is TaskCanceledException || e is IOException)
+                {
+                    LastError = "the tray on offer failed: " + e.GetType().Name;
+                    return (FetchResult.Failed, null);
                 }
             }
         }

@@ -35,14 +35,17 @@ namespace Crucible.Tray
         private string reason = "";
         /// <summary>Which balloon is up: a click on the update one opens the download page.</summary>
         private bool balloonIsUpdate;
+        /// <summary>Spec 2026-10-12: the version this process replaced, when it was started by the swap; null otherwise.</summary>
+        private readonly string? updatedFrom;
 
-        public TrayApp(TrayConfig config, ISecretProtector protector, TrayLog log)
+        public TrayApp(TrayConfig config, ISecretProtector protector, TrayLog log, string? updatedFrom = null)
         {
             this.config = config;
             this.protector = protector;
             this.log = log;
+            this.updatedFrom = updatedFrom;
             client = new ServerClient(config, ServerClient.CreateHandler());
-            cycle = new Cycle(config, client, new SentLog(Paths.Sent), new Stability(), log, () => DateTime.UtcNow);
+            cycle = new Cycle(config, client, new SentLog(Paths.Sent), new Stability(), log, () => DateTime.UtcNow, Paths.Exe, new Authenticode());
             nudge = new UpdateNudge(AppInfo.Version, config.NudgedVersion);
 
             var menu = new ContextMenuStrip();
@@ -68,6 +71,12 @@ namespace Crucible.Tray
 
             Show(config.Paused ? TrayState.Paused : TrayState.Ok, "");
             log.Write("started " + AppInfo.Name + " tray " + AppInfo.Version);
+            if (updatedFrom != null)
+            {
+                log.Write("updated from " + updatedFrom + " to " + AppInfo.Version); // two checked version numbers
+                balloonIsUpdate = false;
+                icon.ShowBalloonTip(5000, AppInfo.Name, "Crucible is now version " + AppInfo.Version + ".", ToolTipIcon.Info);
+            }
             timer.Tick += async (s, e) => await Tick();
             timer.Start();
             forceNext = true; // the first pass fetches whatever the clock says
@@ -90,12 +99,25 @@ namespace Crucible.Tray
                     icon.ShowBalloonTip(5000, AppInfo.Name, "The Crucible addon is now version " + report.AddonInstalled + ".", ToolTipIcon.Info);
                 }
 
+                // Spec 2026-10-12: the old copy of this exe goes after the first clean pass of the new one.
+                if (updatedFrom != null && report.State == TrayState.Ok) ForgetOldCopy();
+                if (report.TrayUpdateFailed != null) Save(); // the failed version, so it is not tried again after a restart
+                // A verified newer tray waits beside the exe: swap it in after a pass that moved nothing.
+                if (cycle.StagedVersion != null && SelfUpdate.QuietEnough(report, config.Paused) && TrySwap(cycle.StagedVersion)) return;
+                // An update that failed or stalled is told at once, not at the next daily check (review I4b).
+                if (report.TrayUpdateFailed != null || cycle.TrayStalled) versionCheckedUtc = DateTime.MinValue;
+
                 if (!config.Paused && DateTime.UtcNow - versionCheckedUtc > TimeSpan.FromHours(24))
                 {
                     versionCheckedUtc = DateTime.UtcNow;
                     string? offered = await Task.Run(() => client.LatestVersionAsync());
-                    // Shown, never fetched (M112, C3): the person downloads it from the website themselves.
-                    bool balloon = nudge.Offer(offered);
+                    // M112's nudge is now the fallback (spec 2026-10-12): a signed build fetches the update itself, so
+                    // the person is only sent to the download page by an unsigned build, for a version that failed, or
+                    // for one that three checks could not get. The core says which (review I1, I4).
+                    bool signedBuild = await Task.Run(() => cycle.SelfSigner != null);
+                    string? toNudge = SelfUpdate.NudgeFor(offered, config.FailedUpdateVersion, signedBuild, cycle.TrayStalled);
+                    if (offered != null && toNudge == null) nudge.Withdraw();
+                    bool balloon = nudge.Offer(toNudge);
                     updateItem.Text = nudge.MenuText ?? "";
                     updateItem.Visible = nudge.Available != null;
                     if (balloon)
@@ -130,6 +152,48 @@ namespace Crucible.Tray
             string? addon = AddonVersionHere();
             whatIsHere.Text = AppInfo.Name + " " + AppInfo.Version + (addon == null ? "" : "  ·  addon " + addon);
             icon.Text = TrayText.Tooltip(state, reason, cycle.LastUploadUtc, cycle.PricesAtUtc, nudge.TooltipLine, DateTime.UtcNow);
+        }
+
+        /// <summary>The real file operations behind <see cref="SelfUpdate.Swap"/>.</summary>
+        private sealed class WindowsFiles : IFileOps
+        {
+            public bool Exists(string path) => File.Exists(path);
+            public void Delete(string path) => File.Delete(path);
+            public void Move(string from, string to) => File.Move(from, to);
+            public void Start(string exe) => Process.Start(new ProcessStartInfo(exe, "--after-update " + AppInfo.Version) { UseShellExecute = false });
+        }
+
+        /// <summary>
+        /// The swap (spec 2026-10-12, section 5), carried out by the core over real files: the running exe is renamed to
+        /// .old, the staged file takes its name, the new one is started and this one leaves. True when this process is
+        /// on its way out. Anything else puts the running build back (review I2) and lets the nudge take over.
+        /// </summary>
+        private bool TrySwap(string version)
+        {
+            UpdatePaths? paths = cycle.UpdatePaths;
+            if (paths == null) return false;
+            log.Write("swapping to tray " + version);
+            SwapResult result = SelfUpdate.Swap(paths, new WindowsFiles());
+            if (result == SwapResult.Swapped)
+            {
+                timer.Stop();
+                icon.Visible = false;
+                ExitThread();
+                return true;
+            }
+            log.Write("tray " + version + " could not be swapped in: " + (result == SwapResult.Restored ? "this build is back in place" : "this build is NOT back under its own name - look beside Crucible.exe for .old or .new and rename it"));
+            config.FailedUpdateVersion = version;
+            Save();
+            cycle.ForgetStaged();
+            return false;
+        }
+
+        private void ForgetOldCopy()
+        {
+            UpdatePaths? paths = cycle.UpdatePaths;
+            if (paths == null || !File.Exists(paths.Old)) return;
+            try { File.Delete(paths.Old); log.Write("the old copy is gone"); }
+            catch (IOException) { } catch (UnauthorizedAccessException) { } // still in use for a moment: next pass
         }
 
         private void TogglePause()
