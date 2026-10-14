@@ -34,6 +34,7 @@ local ITEM_COLUMNS = {
     { "last", "Last", 480, 28, "RIGHT" },
     { "back", "Back", 510, 30, "RIGHT" },
 }
+local FRAME_NAME = "CrucibleLedgerFrame" -- global, so UISpecialFrames (the game's own Escape handling) can close it
 local OFF_TEXT = "Record my sales is off on the website - this window has nothing to show."
 local NONE_TEXT = "no sales yet"
 local FOOTER_TAIL = "the website has the full history"
@@ -104,12 +105,14 @@ local function footer(view, now)
     return "as of " .. Logic.formatAge(now - view.asOf) .. "; " .. FOOTER_TAIL
 end
 
--- An item's name: the game's own, else its id.
-local function nameOf(itemID)
+-- An item's name: the game's own, else the one the server baked into the row (the client's item cache holds few of
+-- them), else its id.
+local function nameOf(itemID, baked)
     if type(C_Item) == "table" and type(C_Item.GetItemNameByID) == "function" then
         local ok, known = pcall(C_Item.GetItemNameByID, itemID)
         if ok and not ns.isSecret(known) and type(known) == "string" and known ~= "" then return known end
     end
+    if type(baked) == "string" and baked ~= "" and not ns.isSecret(baked) then return baked end
     return "item " .. count(itemID)
 end
 
@@ -149,7 +152,7 @@ local function newRow(parent, columns, x, width, i)
 end
 
 local function build()
-    local p = CreateFrame("Frame", nil, UIParent)
+    local p = CreateFrame("Frame", FRAME_NAME, UIParent)
     p:SetSize(WIDTH, TOP + VISIBLE * ROW_H + 42)
     p:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     p:SetFrameStrata("HIGH")
@@ -251,7 +254,7 @@ local function paint()
         local irow = window.itemRows[i]
         if it then
             irow.data = { itemID = it.itemID }
-            irow.name:SetText(nameOf(it.itemID))
+            irow.name:SetText(nameOf(it.itemID, it.name))
             irow.units:SetText(count(it.units))
             irow.gold:SetText(money(it.copper))
             irow.last:SetText(Logic.formatAge(now - it.lastAt))
@@ -285,6 +288,14 @@ local function attach()
     end
     window = built
     Ledger.window = built
+    -- Escape closes it, the game's own way: the frame's name goes in UISpecialFrames, once.
+    if type(UISpecialFrames) == "table" then
+        local present = false
+        for i = 1, #UISpecialFrames do
+            if UISpecialFrames[i] == FRAME_NAME then present = true end
+        end
+        if not present then UISpecialFrames[#UISpecialFrames + 1] = FRAME_NAME end
+    end
     for i = 1, VISIBLE do
         built.dayRows[i]:EnableMouseWheel(true)
         built.dayRows[i]:SetScript("OnMouseWheel", scroller("days", "days"))
@@ -316,7 +327,7 @@ local function say(v, now)
     end
     for i = 1, math.min(#v.items, 10) do
         local it = v.items[i]
-        ns.print("  " .. nameOf(it.itemID) .. ": " .. count(it.units) .. " sold for " .. money(it.copper)
+        ns.print("  " .. nameOf(it.itemID, it.name) .. ": " .. count(it.units) .. " sold for " .. money(it.copper)
             .. ", " .. count(it.returned) .. " back")
     end
 end

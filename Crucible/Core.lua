@@ -152,12 +152,11 @@ end
 
 -- B-P (spec 2026-10-04 section P): how far under the lowest price the Sell tab's suggestion goes - 0 is one copper (the
 -- default), 1-10 is that many percent. The strip's "Undercut by" button sets it. It lives in CrucibleDB.settings beside
--- auto-scan, but it is not one of Logic.settings' fields, so it never goes into the reference document and never
--- reaches the server (the spec: settings reach the server only as the existing switches do - they do not). Like all
--- saved state on this client it does not survive a client restart: each session starts at 1c.
+-- auto-scan and travels the same way (it is one of Logic.settings' fields): in the reference document and back in
+-- Data.lua, so it survives a client restart - saved beats baked beats 1c. A value that is not a whole 0-10 is the default.
 ns.UNDERCUT_MAX_PCT = 10
 function ns.undercutPct()
-    local v = ns.db().settings.undercutPct
+    local v = ns.settings().undercutPct
     if not ns.isSecret(v) and type(v) == "number" and v % 1 == 0 and v >= 1 and v <= ns.UNDERCUT_MAX_PCT then
         return v
     end

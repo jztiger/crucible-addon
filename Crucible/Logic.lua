@@ -9,7 +9,7 @@ ns = ns or {}
 local L = {}
 ns.Logic = L
 
-L.VERSION = "0.99.3"
+L.VERSION = "0.99.4"
 -- Two independent version counters, mirroring the server (src/shared/scan-schema.ts SCAN_SCHEMA_VERSION,
 -- src/shared/ref-doc.ts REF_SCHEMA_VERSION): the scan document's shape (replicate, browse) has not changed
 -- since M1, so buildDoc still tags SCAN_SCHEMA; the reference document gained items, suffixes and named
@@ -1149,6 +1149,9 @@ local function cleanSettings(src)
     for _, flag in ipairs({ "sortDesc", "knownOnly", "hideUnknown", "autoScan", "autoTake" }) do
         if type(src[flag]) == "boolean" then out[flag] = src[flag] end
     end
+    -- The strip's "Undercut by" rule: 0 is one copper, 1-10 is that many percent.
+    local pct = src.undercutPct
+    if type(pct) == "number" and pct % 1 == 0 and pct >= 0 and pct <= 10 then out.undercutPct = pct end
     if validPanel(src.panel) then
         local function cents(v) return math.floor(v * 100 + 0.5) / 100 end
         out.panel = { src.panel[1], src.panel[2], cents(src.panel[3]), cents(src.panel[4]) }
@@ -1161,7 +1164,7 @@ end
 -- choice survives a client restart. The server that accepts it deploys before any addon that sends it.
 function L.settings(saved, baked)
     local out = { list = "profit", sortKey = "profit", sortDesc = true, knownOnly = true, hideUnknown = false,
-        autoScan = true, autoTake = false }
+        autoScan = true, autoTake = false, undercutPct = 0 }
     for _, layer in ipairs({ cleanSettings(baked), cleanSettings(saved) }) do
         for key, value in pairs(layer) do out[key] = value end
     end
