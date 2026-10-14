@@ -185,6 +185,8 @@ local function statusText(status)
     if status.busy then
         -- A browse run whose query the client has not taken yet: the single wait of limit 1, and the wait a
         -- clicked Quick scan has always been allowed. Either way there is something running to see and to stop.
+        -- F3: the auto run holding its one query until another addon's search has had its answer (Scan.lua).
+        if status.holding then return "waiting for another addon's search" end
         if status.waiting then return "waiting for the house to accept a query" end
         if status.kind == "browse" and type(status.pages) == "number" and status.pages > 0 then
             return string.format("scanning ... page %.0f", status.pages)

@@ -7,10 +7,16 @@
 --     alone, once per opening of the auction house (C7 as revised 2026-09-23: the six limits on that
 --     one are all in Strip.lua; nothing in this file decides it). Event handlers and timers below do
 --     nothing unless such a scan is running, and then they only carry that one scan forward. Nothing
---     re-arms itself. The one thing this file does decide about that scan is the single wait the owner
---     amended C7 with on 2026-09-23: a run marked `auto` whose query the client would not take at the
---     opening gets ONE attempt on the first AUCTION_HOUSE_THROTTLED_SYSTEM_READY and is then over
---     (run.waitedOnce, in that handler below). It is still one query per opening either way.
+--     re-arms itself, with one bounded exception: the auto run's yield (F3, below) checks once a second,
+--     at most FOREIGN_WAIT_S times, and only while that run is holding. The one thing this file does
+--     decide about that scan is the single wait the owner amended C7 with on 2026-09-23: a run marked
+--     `auto` whose query the client would not take at the opening gets ONE attempt on the first
+--     AUCTION_HOUSE_THROTTLED_SYSTEM_READY and is then over (run.waitedOnce, in that handler below). It
+--     is still one query per opening either way.
+--   * F3 (the coexistence walk, 2026-10-14): that auto run also yields to another addon's search. While a
+--     search not sent by Crucible is unanswered, or was sent less than FOREIGN_GRACE_S ago, its one query
+--     is held - for at most FOREIGN_WAIT_S - and then sent, once, exactly as it would have been at the
+--     opening. A scan the player clicked for never holds.
 --   * The read walker (ns.Walker, B-S) is the one other way a query leaves: a short run of item searches
 --     started only by a player's click (the shopping list's Search All) or right after a scan the player
 --     asked for (the variant learner) - one in flight, each on the client's ready flag, with a Stop, and
@@ -65,12 +71,22 @@ local lastScanAt = 0
 -- else about an opening.
 local autoGaveUp = false
 
+-- F3: what is known of the newest search somebody else sent into the one browse result list (see onForeignSearch).
+-- lastForeignSearchMs is ns.clockMs() at that send, or nil for none this opening; foreignPending is true from that
+-- send until the next browse results event, which answers it. Both are facts about one opening of the house.
+local FOREIGN_GRACE_S = 3 -- a foreign search this recent holds the auto run even once it has been answered
+local FOREIGN_WAIT_S = 20 -- ... and the auto run holds for at most this long, then sends its one query anyway
+local lastForeignSearchMs = nil
+local foreignPending = false
+
 local ladderNext -- defined with the price ladders further down; the throttle handler above them calls it
 -- Defined with the variant learning further down, but finishBrowse - above it - starts it. A Lua local
 -- must be in scope where it is USED, not merely where it is assigned.
 local learnFromBrowse
 -- Defined with the read walker further down; Scan.reset, above it, ends a walk through it.
 local endWalk
+-- Defined beside browseSend further down; onForeignSearch, above it, puts the auto run on hold through it.
+local startHold
 
 -- A whole number that can be an id. Secret values and floats are neither.
 local function isCountLike(v)
@@ -88,7 +104,7 @@ end
 
 -- What the auction house strip shows (Strip.lua). Read-only, and busy is only ever about a scan of the
 -- market: the short learn and ladder runs are nothing the Stop button should offer to end.
--- -> { busy, kind, pages, waiting, autoGaveUp, lastScanAt }
+-- -> { busy, kind, pages, waiting, holding, autoGaveUp, lastScanAt }
 function Scan.status()
     local run = current
     local scanning = run ~= nil and (run.kind == "replicate" or run.kind == "browse")
@@ -100,6 +116,7 @@ function Scan.status()
         kind = scanning and run.kind or nil,
         pages = scanning and run.pages or nil,
         waiting = waiting,
+        holding = waiting and run.holding == true, -- F3: the auto run, yielding to another addon's search
         autoGaveUp = autoGaveUp,
         lastScanAt = lastScanAt,
     }
@@ -676,17 +693,29 @@ end
 --     (see onBrowseResults).
 -- Results that are not provably this scan's own are not exported at all, not even as incomplete:
 -- they are no scan of the market, and the tooltip prices must not be replaced by them.
+-- The same hook works the other way round too (F3): every search it sees is written down, scan or no scan,
+-- so that the one scan that starts itself can hold its query until the other search has had its answer.
 local sendingOwn = false
 
+-- An abandoned run asks for nothing more, ever (F3, the owner's C1): its pending next page is dropped here, and
+-- browseMore, the one place a page is asked for, also refuses any run that is no longer the current one.
 local function abandonBrowse(run, why)
+    run.wantMore = false
     if current == run then current = nil end
     ns.print("quick scan: " .. why .. ", so the results are no longer this scan's. Nothing was saved and the"
         .. " tooltip prices were left alone. Press Quick scan again, and leave the search alone until it is done.")
 end
 
 local function onForeignSearch()
+    if sendingOwn then return end
+    lastForeignSearchMs = ns.clockMs()
+    foreignPending = true
     local run = current
-    if sendingOwn or not run or run.kind ~= "browse" then return end
+    if not run or run.kind ~= "browse" then return end
+    -- The auto run whose query has not gone out yet has no results to lose: it yields instead (F3) - or, once its
+    -- FOREIGN_WAIT_S are spent, simply goes on to its one query. A clicked run, or any run whose query is out, is
+    -- abandoned exactly as before.
+    if run.auto and not run.sent then return startHold(run) end
     abandonBrowse(run, "another search was sent while it was running")
 end
 
@@ -784,6 +813,11 @@ local function finishBrowse(run, complete, why)
         -- had to drop rows must not claim to be complete.
         complete = false
         why = string.format("%.0f of %.0f rows could not be read", #results - #rows, #results)
+    end
+    if complete and run.contested then
+        -- F3: sent while another search was unanswered - these rows are not provably this scan's own (see browseSend).
+        complete = false
+        why = "another search was still unanswered when it was sent"
     end
     local t1 = ns.serverTime()
     ns.debugPrint(string.format("quick scan: %.0f item keys in %.0f %s, %.1f s", #rows, run.pages,
@@ -1046,6 +1080,10 @@ local function browseSend(run)
     if run.sent or not C_AuctionHouse.IsThrottledMessageSystemReady() then return end
     run.sent = true
     run.pages = 1
+    -- F3: the auto run sent anyway (its FOREIGN_WAIT_S ran out) while another search was still unanswered. The first
+    -- answer to arrive may then be theirs, and nothing in the list can tell, so finishBrowse never calls it complete.
+    -- Read here, at the send itself: the next results event clears foreignPending before finishBrowse could look.
+    run.contested = run.auto and foreignPending
     local sorts = {}
     local order = type(Enum) == "table" and type(Enum.AuctionHouseSortOrder) == "table" and Enum.AuctionHouseSortOrder.Price
     if order ~= nil and order ~= false then sorts[1] = { sortOrder = order, reverseSort = false } end
@@ -1061,16 +1099,64 @@ local function browseSend(run)
     ns.db().state.lastBrowseAt = ns.serverTime() -- only now has a browse scan really been asked for
 end
 
--- The next page: asked for at most once per page of results, and only when the throttle is ready.
+-- F3: the auto run's hold. True while another addon's search may still be filling the one result list: it has
+-- not been answered yet, or it was sent less than FOREIGN_GRACE_S ago.
+local function foreignBusy()
+    if foreignPending then return true end
+    return lastForeignSearchMs ~= nil and ns.clockMs() - lastForeignSearchMs < FOREIGN_GRACE_S * 1000
+end
+
+-- A hold that ends on the timer must stop showing as a hold, and no event the strip listens to follows it.
+-- Repaints the strip and does nothing else.
+local function repaintStrip()
+    local strip = ns.Strip
+    if type(strip) == "table" and type(strip.repaint) == "function" then strip.repaint() end
+end
+
+-- The hold, re-checked on each browse results event, each ready signal and the one-second timer. Once the other
+-- search is answered and FOREIGN_GRACE_S old - or at the deadline, whatever it is doing - the run goes on exactly
+-- as it would have at the opening: its one query now if the client is ready, else the single wait for the first
+-- ready signal (the throttle handler below), which the hold never spends.
+local function holdCheck(run, deadline)
+    if current ~= run or not run.holding then return end
+    if foreignBusy() and not deadline then return end
+    run.holding = false
+    browseSend(run)
+    repaintStrip()
+end
+
+-- Once a second while the run holds, and FOREIGN_WAIT_S times at most over the whole run: the last is the deadline.
+local function holdTick(run)
+    ns.after(1, function()
+        if current ~= run or not run.holding then return end
+        run.holdTicks = run.holdTicks + 1
+        holdCheck(run, run.holdTicks >= FOREIGN_WAIT_S)
+        if current == run and run.holding then holdTick(run) end
+    end)
+end
+
+-- Only the auto run, only before its one query is out, and never past its FOREIGN_WAIT_S in all.
+function startHold(run)
+    if not run.auto or run.sent or run.holding or run.holdTicks >= FOREIGN_WAIT_S then return end
+    run.holding = true
+    holdTick(run)
+    repaintStrip()
+end
+
+-- The next page: asked for at most once per page of results, only when the throttle is ready, and only for the
+-- run that is still the current one - an abandoned run never asks for another (F3).
 local function browseMore(run)
-    if not run.wantMore or not C_AuctionHouse.IsThrottledMessageSystemReady() then return end
+    if current ~= run or not run.wantMore or not C_AuctionHouse.IsThrottledMessageSystemReady() then return end
     run.wantMore = false
     run.pages = run.pages + 1
     C_AuctionHouse.RequestMoreBrowseResults()
 end
 
 local function onBrowseResults()
+    -- F3: whoever's query this answers, the search the auto run may be holding for is no longer unanswered.
+    foreignPending = false
     local run = current
+    if run and run.holding then return holdCheck(run) end
     if not run or run.kind ~= "browse" or not run.sent then return end
     run.answered = true
     -- One paged query only ever grows its list, and what it has listed stays where it is. A list
@@ -1100,8 +1186,8 @@ end
 
 -- opts.auto marks the one scan that starts itself when the house opens (Strip.lua): the same scan in every
 -- other respect, but it waits at most once for the client (the throttle handler below) and it does not go
--- on to learn variant pairs - see finishBrowse. /crucible browse and the Browse button pass nothing and behave
--- exactly as they always have.
+-- on to learn variant pairs - see finishBrowse - and it yields to another addon's search before its one query
+-- (F3, startHold above). /crucible browse and the Browse button pass nothing and behave exactly as they always have.
 -- -> true when a run of THIS call's making is live: its query already out, or waiting for the client to
 -- take it. false only when nothing was started at all and the reason was printed - there is then no run of
 -- ours to stop, to wait for or to report on. This is the one place that answer is decided.
@@ -1113,12 +1199,18 @@ function Scan.browse(opts)
         sent = false, answered = false, wantMore = false, listed = 0,
         auto = type(opts) == "table" and opts.auto == true,
         waitedOnce = false, -- the amended C7's single wait, spent in the throttle handler below
+        holding = false, holdTicks = 0, -- F3: the auto run's yield to another addon's search
         uid = Logic.newUid(now, Logic.rand31()) }
     current = run
     ns.after(BROWSE_TIMEOUT, function()
         if current ~= run then return end
         finishBrowse(run, false, "gave up after " .. BROWSE_TIMEOUT .. " s")
     end)
+    if run.auto and foreignBusy() then
+        startHold(run)
+        ns.print("waiting for another addon's search to finish ...")
+        return true
+    end
     browseSend(run)
     if current ~= run then return false end -- the request itself failed: nothing of ours is running
     ns.print(run.sent and "browsing the whole market ... please leave the auction house search alone until it is done"
@@ -1135,6 +1227,9 @@ ns.on("AUCTION_HOUSE_THROTTLED_SYSTEM_READY", function()
     if run and run.kind == "ladder" then return ladderNext(run) end
     if not run or run.kind ~= "browse" then return end
     if run.sent then return browseMore(run) end
+    -- F3: the auto run holding for another addon's search. This ready signal follows THEIR query; it is not the
+    -- opening's single wait, which stays unspent until the hold is over - only one more moment to re-check it.
+    if run.holding then return holdCheck(run) end
     -- Not sent yet. A scan the player asked for waits here as long as it takes - it is their query, and
     -- they were told it is waiting. The one scan that starts itself gets exactly ONE attempt (C7 as
     -- amended by the owner 2026-09-23): waitedOnce goes up BEFORE the send, so a second ready signal can
@@ -1151,7 +1246,10 @@ ns.on("AUCTION_HOUSE_THROTTLED_SYSTEM_READY", function()
 end)
 
 ns.on("AUCTION_HOUSE_BROWSE_FAILURE", function()
+    -- F3: a failure answers the outstanding search too; and while the auto run holds, the failed query was not ours.
+    foreignPending = false
     local run = current
+    if run and run.holding then return holdCheck(run) end
     if not run or run.kind ~= "browse" then return end
     finishBrowse(run, false, "the server reported a browse failure")
 end)
@@ -1207,6 +1305,7 @@ end)
 ns.on("AUCTION_HOUSE_CLOSED", function()
     late = nil -- whatever list arrives after this is not read
     autoGaveUp = false -- a fact about the opening that is ending, and about nothing else
+    lastForeignSearchMs, foreignPending = nil, false -- F3: so is somebody else's search in it
     interrupt("the auction house was closed")
 end)
 

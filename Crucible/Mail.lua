@@ -96,6 +96,10 @@ local function returnedName(subject, prefixes)
         local prefix, reason = prefixes[i][1], prefixes[i][2]
         if string.sub(subject, 1, #prefix) == prefix then
             local name = string.sub(subject, #prefix + 1)
+            -- The game appends the stack size ("Spider Ichor (10)"); the count is read from the attachment, so
+            -- one trailing " (digits)" is dropped. Never when it would leave nothing.
+            local bare = string.match(name, "^(.+) %(%d+%)$")
+            if bare then name = bare end
             if #name >= 1 and #name <= Logic.MAX_NAME_CHARS then return name, reason end
         end
     end

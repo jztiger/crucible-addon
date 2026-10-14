@@ -79,7 +79,10 @@ function Ledger.view(baked)
     end
     local days = cleanList(ledger.days, MAX_DAYS, { "day", "soldCopper", "soldUnits", "returnedUnits" })
     local items = cleanList(ledger.items, MAX_ITEMS, { "itemID", "units", "copper", "lastAt", "returned" })
+    -- The footer's age is the data file's own (baked.builtAt); ledger.asOf is the build day's UTC midnight, kept
+    -- fixed so the file's etag is stable, and is only the fallback when the file carries no build time.
     local asOf = whole(ledger.asOf) and ledger.asOf or nil
+    if whole(baked.builtAt) and baked.builtAt > 0 then asOf = baked.builtAt end
     if #days == 0 and #items == 0 then return { state = "none", days = days, items = items, asOf = asOf } end
     return { state = "rows", days = days, items = items, asOf = asOf }
 end
