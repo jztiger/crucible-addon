@@ -74,12 +74,13 @@ namespace Crucible.Tray
                     string path = Path.Combine(staged, f.Name);
                     if (Path.GetDirectoryName(Path.GetFullPath(path)) != Path.GetFullPath(staged))
                         throw new InvalidOperationException("the addon was refused: \"" + f.Name + "\" would land outside the folder");
-                    File.WriteAllText(path, f.Content, new UTF8Encoding(false));
+                    // The bytes Reject sized and hashed: a text file's UTF-8 (no BOM), the icon's decoded base64.
+                    File.WriteAllBytes(path, AddonManifest.BytesOf(f) ?? throw new InvalidOperationException("the addon was refused: \"" + f.Name + "\" has no bytes"));
                 }
                 // Read back what is actually on the disk, not what we meant to write.
                 foreach (AddonFile f in manifest.Files)
                 {
-                    if (AddonManifest.Hash(File.ReadAllText(Path.Combine(staged, f.Name), Encoding.UTF8)) != f.Sha256.ToLowerInvariant())
+                    if (AddonManifest.Hash(File.ReadAllBytes(Path.Combine(staged, f.Name))) != f.Sha256.ToLowerInvariant())
                         throw new IOException("\"" + f.Name + "\" did not survive being written");
                 }
                 // The player's own prices come across an update - or, the first time, from our old Tallybook folder;

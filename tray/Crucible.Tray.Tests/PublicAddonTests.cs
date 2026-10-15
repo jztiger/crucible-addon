@@ -1,5 +1,7 @@
 using System;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -77,6 +79,82 @@ namespace Crucible.Tray.Tests
         public async Task A_toc_that_is_not_ours_gives_nothing(string toc)
         {
             Assert.Null(await PublicAddon.FetchAsync(Repo(toc)));
+        }
+
+        // Brief I1: the addon's icon is named by the toc's IconTexture line, never by its file list (the client loads
+        // that list as code). Reinstall from GitHub fetches it from there, as bytes, checked like every other name.
+
+        private static FakeServer RepoWithIcon(string toc, byte[]? icon)
+        {
+            return new FakeServer
+            {
+                Answer = r =>
+                {
+                    string name = r.Url.Substring(r.Url.LastIndexOf('/') + 1);
+                    if (name == "Crucible.toc") return FakeServer.Status(200, toc);
+                    if (name == "Icon.tga")
+                    {
+                        if (icon == null) return FakeServer.Status(404, "Not Found");
+                        return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(icon) };
+                    }
+                    return FakeServer.Status(200, "-- " + name + "\n");
+                },
+            };
+        }
+
+        [Theory]
+        [InlineData("## IconTexture: Interface\\AddOns\\Crucible\\Icon.tga")]
+        [InlineData("## IconTexture: Interface/AddOns/Crucible/Icon.tga")]
+        public async Task The_icon_the_toc_names_is_fetched_as_bytes_and_carried_as_base64(string line)
+        {
+            byte[] icon = AddonInstallerTests.Icon;
+            var repo = RepoWithIcon(Toc.Replace("## Version:", line + "\n## Version:"), icon);
+
+            AddonManifest? m = await PublicAddon.FetchAsync(repo);
+
+            Assert.NotNull(m);
+            Assert.Null(AddonManifest.Reject(m)); // installable as it stands
+            AddonFile file = Assert.Single(m!.Files, f => f.Name == "Icon.tga");
+            Assert.Equal("base64", file.ContentEncoding);
+            Assert.Equal(icon, Convert.FromBase64String(file.Content)); // not one byte decoded as text on the way
+            Assert.All(m.Files.Where(f => f.Name != "Icon.tga"), f => Assert.Null(f.ContentEncoding));
+            Assert.Contains(repo.Requests, r => r.Url == PublicAddon.Base + "Icon.tga");
+        }
+
+        [Fact]
+        public async Task A_toc_with_no_icon_or_a_game_icon_fetches_no_icon_and_still_installs()
+        {
+            foreach (string toc in new[] { Toc, Toc.Replace("## Version:", "## IconTexture: Interface\\ICONS\\INV_Misc_QuestionMark\n## Version:") })
+            {
+                var repo = RepoWithIcon(toc, AddonInstallerTests.Icon);
+                AddonManifest? m = await PublicAddon.FetchAsync(repo);
+                Assert.NotNull(m);
+                Assert.Equal(new[] { "Crucible.toc", "Data.lua", "Logic.lua" }, m!.Files.Select(f => f.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+                Assert.DoesNotContain(repo.Requests, r => r.Url.Contains("ICONS") || r.Url.EndsWith(".tga", StringComparison.Ordinal));
+            }
+        }
+
+        [Theory]
+        [InlineData("Interface\\AddOns\\Crucible\\..\\..\\evil.tga")]
+        [InlineData("Interface\\AddOns\\Crucible\\sub\\Icon.tga")]
+        [InlineData("Interface/AddOns/Crucible/../evil.tga")]
+        [InlineData("Interface\\AddOns\\Crucible\\Icon.png")]
+        [InlineData("Interface\\AddOns\\Crucible\\Logic.lua")]
+        [InlineData("Interface\\AddOns\\Crucible\\Icon")]
+        [InlineData("Interface\\AddOns\\Crucible\\My Icon.tga")]
+        public async Task An_icon_path_into_our_folder_that_is_not_a_plain_tga_name_is_never_requested(string path)
+        {
+            var repo = RepoWithIcon(Toc.Replace("## Version:", "## IconTexture: " + path + "\n## Version:"), AddonInstallerTests.Icon);
+            Assert.Null(await PublicAddon.FetchAsync(repo));
+            var asked = repo.Requests.Select(r => r.Url).ToArray();
+            Assert.All(asked, url => Assert.Contains(url, new[] { "Crucible.toc", "Logic.lua", "Data.lua" }.Select(n => PublicAddon.Base + n)));
+        }
+
+        [Fact]
+        public async Task A_missing_icon_gives_nothing_at_all_rather_than_half_an_addon()
+        {
+            var repo = RepoWithIcon(Toc.Replace("## Version:", "## IconTexture: Interface\\AddOns\\Crucible\\Icon.tga\n## Version:"), null);
+            Assert.Null(await PublicAddon.FetchAsync(repo));
         }
 
         [Fact]

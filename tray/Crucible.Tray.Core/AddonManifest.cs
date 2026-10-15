@@ -32,13 +32,24 @@ namespace Crucible.Tray
             currentVersion > 0 && acceptedVersion >= currentVersion;
     }
 
-/// <summary>One file of the addon, as the server sends it: a plain name, its SHA-256, and its text.</summary>
+    /// <summary>
+    /// One file of the addon, as the server sends it: a plain name, the SHA-256 of its bytes, and its content - the
+    /// text itself for a .lua or .toc, or base64 for the icon (.tga, brief I1), which then says so in "encoding".
+    /// </summary>
     [DataContract]
     public sealed class AddonFile
     {
+        /// <summary>The one encoding there is: a binary file's bytes, in base64.</summary>
+        public const string Base64 = "base64";
+
         [DataMember(Name = "name")] public string Name { get; set; } = "";
         [DataMember(Name = "sha256")] public string Sha256 { get; set; } = "";
         [DataMember(Name = "content")] public string Content { get; set; } = "";
+        /// <summary>
+        /// Null for a text file (the server sends no "encoding" for one - the serializer skips initialisers, so absent
+        /// means null); <see cref="Base64"/> for a binary one. Anything else refuses the whole manifest.
+        /// </summary>
+        [DataMember(Name = "encoding", IsRequired = false, EmitDefaultValue = false)] public string? ContentEncoding { get; set; }
     }
 
     /// <summary>
@@ -49,8 +60,11 @@ namespace Crucible.Tray
     [DataContract]
     public sealed class AddonManifest
     {
-        /// <summary>A plain file name and nothing else: no folder, no separator, no dots but the one.</summary>
-        private static readonly Regex PlainName = new Regex(@"^[A-Za-z][A-Za-z0-9]*\.(lua|toc)$", RegexOptions.CultureInvariant);
+        /// <summary>
+        /// A plain file name and nothing else: no folder, no separator, no dots but the one. The addon's Lua, its toc
+        /// and its icon (brief I1) - the same pattern the server serves by.
+        /// </summary>
+        private static readonly Regex PlainName = new Regex(@"^[A-Za-z][A-Za-z0-9]*\.(lua|toc|tga)$", RegexOptions.CultureInvariant);
         private static readonly Regex PlainVersion = new Regex(@"^[0-9]{1,4}(\.[0-9]{1,4}){0,3}$", RegexOptions.CultureInvariant);
 
         [DataMember(Name = "version")] public string Version { get; set; } = "";
@@ -64,6 +78,22 @@ namespace Crucible.Tray
 
         /// <summary>A plain addon file name and nothing else. Checked before a name is ever used as a path.</summary>
         public static bool IsPlainName(string? name) => name != null && PlainName.IsMatch(name);
+
+        /// <summary>A file that is not text (the icon): it comes as base64 and only as base64; a text file never does.</summary>
+        public static bool IsBinaryName(string? name) => name != null && name.EndsWith(".tga", StringComparison.Ordinal);
+
+        /// <summary>
+        /// The bytes a file stands for, or null when they cannot be had: a text file is its text in UTF-8 and must carry
+        /// no encoding; a binary file must be base64 that decodes. Never throws - a bad entry is a reason, not a crash.
+        /// </summary>
+        public static byte[]? BytesOf(AddonFile? f)
+        {
+            if (f?.Content == null) return null;
+            if (!IsBinaryName(f.Name)) return f.ContentEncoding == null ? Encoding.UTF8.GetBytes(f.Content) : null;
+            if (f.ContentEncoding != AddonFile.Base64) return null;
+            try { return Convert.FromBase64String(f.Content); }
+            catch (FormatException) { return null; }
+        }
 
         /// <summary>The "## Version:" line of a .toc, or null.</summary>
         public static string? VersionOfToc(string toc)
@@ -91,22 +121,27 @@ namespace Crucible.Tray
                 if (!seen.Add(name)) return "\"" + name + "\" is in it twice";
                 if (name.EndsWith(".toc", StringComparison.OrdinalIgnoreCase)) tocs++;
                 if (f!.Content == null) return "\"" + name + "\" has no content";
-                int bytes = Encoding.UTF8.GetByteCount(f.Content);
-                if (bytes > AddonInstaller.MaxFileBytes) return "\"" + name + "\" is larger than " + AddonInstaller.MaxFileBytes + " bytes";
-                total += bytes;
-                if (!string.Equals(Hash(f.Content), f.Sha256, StringComparison.OrdinalIgnoreCase)) return "\"" + name + "\" does not match its hash";
+                // Size and hash are of the bytes that would be written: a text file's UTF-8, a binary file's decoded base64.
+                byte[]? bytes = BytesOf(f);
+                if (bytes == null) return IsBinaryName(name) ? "\"" + name + "\" is not in base64" : "\"" + name + "\" is text but came encoded";
+                if (bytes.Length > AddonInstaller.MaxFileBytes) return "\"" + name + "\" is larger than " + AddonInstaller.MaxFileBytes + " bytes";
+                total += bytes.Length;
+                if (!string.Equals(Hash(bytes), f.Sha256, StringComparison.OrdinalIgnoreCase)) return "\"" + name + "\" does not match its hash";
             }
             if (tocs != 1) return tocs == 0 ? "it has no .toc" : "it has more than one .toc";
             if (total > AddonInstaller.MaxTotalBytes) return "it is larger than " + AddonInstaller.MaxTotalBytes + " bytes in total";
             return null;
         }
 
-        public static string Hash(string content)
+        /// <summary>The SHA-256 of a text file: of its UTF-8 bytes, the bytes that are written.</summary>
+        public static string Hash(string content) => Hash(Encoding.UTF8.GetBytes(content));
+
+        public static string Hash(byte[] bytes)
         {
             using (SHA256 sha = SHA256.Create())
             {
                 var hex = new StringBuilder(64);
-                foreach (byte b in sha.ComputeHash(Encoding.UTF8.GetBytes(content))) hex.Append(b.ToString("x2"));
+                foreach (byte b in sha.ComputeHash(bytes)) hex.Append(b.ToString("x2"));
                 return hex.ToString();
             }
         }

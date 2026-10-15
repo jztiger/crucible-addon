@@ -385,6 +385,48 @@ namespace Crucible.Tray.Tests
             Assert.Null(second.manifest);
         }
 
+        /// <summary>The server's manifest with the icon in it (brief I1): the toc as text, the icon as base64.</summary>
+        private static string BodyWithIcon(string iconEntry)
+        {
+            const string toc = "## Version: 0.9.0\n";
+            return "{\"version\":\"0.9.0\",\"files\":[{\"name\":\"Crucible.toc\",\"sha256\":\"" + AddonManifest.Hash(toc)
+                + "\",\"content\":\"## Version: 0.9.0\\n\"}," + iconEntry + "]}";
+        }
+
+        [Fact]
+        public async Task The_icon_comes_through_the_json_as_base64_and_installs_as_exactly_its_bytes()
+        {
+            byte[] icon = AddonInstallerTests.Icon;
+            string sha;
+            using (var h = System.Security.Cryptography.SHA256.Create()) sha = string.Concat(h.ComputeHash(icon).Select(b => b.ToString("x2")));
+            string entry = "{\"name\":\"Icon.tga\",\"sha256\":\"" + sha + "\",\"encoding\":\"base64\",\"content\":\"" + Convert.ToBase64String(icon) + "\"}";
+            var server = new FakeServer { Answer = _ => FakeServer.Status(200, BodyWithIcon(entry)) };
+
+            var got = await new ServerClient(ServerClientTests.Config(), server).FetchAddonAsync(null);
+
+            Assert.Equal(FetchResult.Changed, got.result);
+            AddonFile file = Assert.Single(got.manifest!.Files, f => f.Name == "Icon.tga");
+            Assert.Equal("base64", file.ContentEncoding);
+            Assert.Null(got.manifest.Files.Single(f => f.Name == "Crucible.toc").ContentEncoding); // text carries none
+            using var dir = new TempDir();
+            string target = System.IO.Path.Combine(dir.Path, "Crucible");
+            AddonInstaller.Install(target, got.manifest);
+            Assert.Equal(icon, System.IO.File.ReadAllBytes(System.IO.Path.Combine(target, "Icon.tga")));
+        }
+
+        [Theory]
+        [InlineData("{\"name\":\"Icon.tga\",\"sha256\":\"00\",\"encoding\":\"base64\",\"content\":\"%%% not base64 %%%\"}")]
+        [InlineData("{\"name\":\"Icon.tga\",\"sha256\":\"00\",\"encoding\":\"base64\",\"content\":\"AAEC\"}")]
+        [InlineData("{\"name\":\"Icon.tga\",\"sha256\":\"00\",\"content\":\"AAEC\"}")]
+        [InlineData("{\"name\":\"Icon.png\",\"sha256\":\"00\",\"encoding\":\"base64\",\"content\":\"AAEC\"}")]
+        public async Task An_icon_that_does_not_add_up_makes_the_whole_manifest_invalid_and_nothing_throws(string iconEntry)
+        {
+            var server = new FakeServer { Answer = _ => FakeServer.Status(200, BodyWithIcon(iconEntry)) };
+            var got = await new ServerClient(ServerClientTests.Config(), server).FetchAddonAsync(null);
+            Assert.Equal(FetchResult.Invalid, got.result);
+            Assert.Null(got.manifest);
+        }
+
         [Theory]
         [InlineData("<!DOCTYPE html><html>Just a moment...</html>")]
         [InlineData("")]

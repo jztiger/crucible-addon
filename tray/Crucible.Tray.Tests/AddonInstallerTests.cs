@@ -27,6 +27,23 @@ namespace Crucible.Tray.Tests
         private static AddonFile File_(string name, string content) =>
             new AddonFile { Name = name, Content = content, Sha256 = Sha(content) };
 
+        private static string Sha(byte[] bytes)
+        {
+            using (SHA256 sha = SHA256.Create())
+            {
+                var hex = new StringBuilder(64);
+                foreach (byte b in sha.ComputeHash(bytes)) hex.Append(b.ToString("x2"));
+                return hex.ToString();
+            }
+        }
+
+        /// <summary>A binary file as the server sends one (brief I1): base64 content, the sha256 of the raw bytes.</summary>
+        private static AddonFile Bin(string name, byte[] bytes) =>
+            new AddonFile { Name = name, ContentEncoding = "base64", Content = Convert.ToBase64String(bytes), Sha256 = Sha(bytes) };
+
+        /// <summary>A TGA header and bytes that are not UTF-8 at all: any text decoding on the way would show.</summary>
+        internal static readonly byte[] Icon = { 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 64, 0, 32, 40, 0xff, 0xfe, 0x80, 0xc3, 0x00, 0x7f, 0x0d, 0x0a };
+
         private const string Toc = "## Interface: 16001\n## Title: Crucible\n## Version: 0.9.0\n\nLogic.lua\nData.lua\n";
         private const string EmptyData = "-- GENERATED\nns.baked = {\n}\n";
 
@@ -128,6 +145,11 @@ namespace Crucible.Tray.Tests
         [InlineData(".lua")]
         [InlineData("Logic .lua")]
         [InlineData("Logic\0.lua")]
+        [InlineData("Icon.png")]
+        [InlineData("x.blp")]
+        [InlineData("Icon.tga.bak")]
+        [InlineData("../Icon.tga")]
+        [InlineData("sub\\Icon.tga")]
         public void A_name_that_is_not_a_plain_addon_file_is_refused_whole(string name)
         {
             using var dir = new TempDir();
@@ -205,6 +227,71 @@ namespace Crucible.Tray.Tests
         public void A_good_manifest_is_not_refused()
         {
             Assert.Null(AddonManifest.Reject(Good()));
+            Assert.Null(AddonManifest.Reject(Good(Bin("Icon.tga", Icon))));
+        }
+
+        // Brief I1: the addon's own icon, a binary file, rides in the manifest as base64. The tray decodes it, checks
+        // the sha256 of the BYTES and writes those bytes - with the rest of the addon, whole or not at all.
+
+        [Fact]
+        public void A_fresh_install_writes_the_icon_byte_for_byte_beside_the_text_files()
+        {
+            using var dir = new TempDir();
+            var (addons, target) = AddOns(dir, installed: false);
+
+            AddonInstaller.Install(target, Good(Bin("Icon.tga", Icon)));
+
+            Assert.Equal(new[] { "Crucible.toc", "Data.lua", "Icon.tga", "Logic.lua" }, Directory.GetFiles(target).Select(Path.GetFileName).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+            Assert.Equal(Icon, System.IO.File.ReadAllBytes(Path.Combine(target, "Icon.tga")));
+            Assert.Equal(Toc, System.IO.File.ReadAllText(Path.Combine(target, "Crucible.toc")));
+            NothingElseTouched(addons);
+        }
+
+        [Fact]
+        public void An_update_that_brings_the_icon_still_KEEPS_THE_PLAYERS_PRICES()
+        {
+            using var dir = new TempDir();
+            var (addons, target) = AddOns(dir, installed: true);
+            string prices = System.IO.File.ReadAllText(Path.Combine(target, "Data.lua"));
+
+            AddonInstaller.Install(target, Good(Bin("Icon.tga", Icon)));
+
+            Assert.Equal(Icon, System.IO.File.ReadAllBytes(Path.Combine(target, "Icon.tga")));
+            Assert.Equal(prices, System.IO.File.ReadAllText(Path.Combine(target, "Data.lua"))); // NOT the manifest's empty one
+            Assert.Equal("0.9.0", AddonInstaller.InstalledVersion(target));
+            NothingElseTouched(addons);
+        }
+
+        [Fact]
+        public void An_icon_that_does_not_add_up_refuses_the_whole_manifest()
+        {
+            using var dir = new TempDir();
+            var (addons, target) = AddOns(dir, installed: true);
+            string before = Snapshot(target);
+
+            var wrongBytes = Bin("Icon.tga", Icon);
+            wrongBytes.Sha256 = Sha(new byte[] { 1, 2, 3 });                                                   // allowed name, its hash is of other bytes
+            var hashOfTheText = Bin("Icon.tga", Icon);
+            hashOfTheText.Sha256 = Sha(hashOfTheText.Content);                                               // the hash of the base64, not of the bytes
+            var asText = File_("Icon.tga", Encoding.UTF8.GetString(Icon));                                  // a binary file sent as text
+            var unknown = Bin("Icon.tga", Icon);
+            unknown.ContentEncoding = "gzip";                                                                  // an encoding we do not know
+            var notBase64 = new AddonFile { Name = "Icon.tga", ContentEncoding = "base64", Content = "%%% not base64 %%%", Sha256 = Sha(Icon) };
+            var textAsBase64 = Bin("Extra.lua", Encoding.UTF8.GetBytes("local _, ns = ...\n"));            // a text file sent as base64
+            var tooBig = Bin("Icon.tga", new byte[AddonInstaller.MaxFileBytes + 1]);                         // decoded, larger than any file may be
+            var noContent = new AddonFile { Name = "Icon.tga", ContentEncoding = "base64", Content = null!, Sha256 = Sha(Icon) };
+
+            foreach (AddonFile bad in new[] { wrongBytes, hashOfTheText, asText, unknown, notBase64, textAsBase64, tooBig, noContent })
+            {
+                AddonManifest m = Good(bad);
+                Assert.NotNull(AddonManifest.Reject(m)); // a reason, never an exception
+                Assert.ThrowsAny<InvalidOperationException>(() => AddonInstaller.Install(target, m));
+            }
+
+            Assert.Equal(before, Snapshot(target)); // the addon that was there, untouched
+            Assert.False(System.IO.File.Exists(Path.Combine(target, "Icon.tga")));
+            Assert.DoesNotContain(Directory.GetDirectories(addons), d => Path.GetFileName(d)!.Contains(".new-") || Path.GetFileName(d)!.Contains(".old-"));
+            NothingElseTouched(addons);
         }
 
         // The rename (2026-10-04): the addon was Tallybook, in Interface\AddOns\Tallybook. Remove these at 1.0.0 with the code.
