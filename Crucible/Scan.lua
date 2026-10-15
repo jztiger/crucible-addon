@@ -44,9 +44,11 @@ local MAX_RESETTLES = 15      -- ... and is given this many more tries if it kee
 local SETTLE_BUDGET = 60      -- ... or this long after the first list event if it keeps announcing changes
 local REPLICATE_TIMEOUT = 30  -- no list event by then: say so, and let the player do something else
 local LATE_LIMIT = 300        -- a list that arrives within this long of the request is still read
-local LINK_WAIT_FRAMES = 120   -- rows whose item link was not loaded: their items are requested, and the client gets
-                              -- at most this many frames (about two seconds) to answer before they are read once more
-local LINK_REQUEST_CAP = 2000 -- ... for at most this many distinct items
+local LINK_WAIT_FRAMES = 200   -- rows whose item link was not loaded: their items are requested, and the client gets
+                              -- at most this many frames (a bit over three seconds) to answer before they are read again
+local LINK_REQUEST_CAP = 2000 -- ... for at most this many distinct items in one round
+local LINK_ROUNDS = 3         -- rows still without a link after a look get another round (items not asked before), up to this many
+local LINK_WAIT_TOTAL_FRAMES = 600 -- ... and all the waiting together never exceeds this (about ten seconds at 60 fps)
 local NO_LINK_MIN = 10        -- rows still without a link after that are tolerated: this many at least,
 local NO_LINK_SHARE = 0.005   -- ... or this share of the list, whichever is more (see finishReplicate)
 local SIGNATURE_MIN_ROWS = 50 -- lists this long are compared with the last one read (see lastSignature)
@@ -279,8 +281,8 @@ local function finishReplicate(run, agg, n, unreadable, noLink)
     local complete = run.readOk == true and (not run.unstable)
         and untrusted == 0
         and agg.rowCount == n - noLink and run.finalCount == n
-    ns.debugPrint(string.format("full scan: %.0f auctions -> %.0f rows, %.0f item keys, %.0f bid-only, %.0f without a link, %.1f s",
-        agg.rowCount, #rows, agg:keyCount(), agg.bidOnly, noLink, seconds(run)))
+    ns.debugPrint(string.format("full scan: %.0f auctions -> %.0f rows, %.0f item keys, %.0f bid-only, %.0f without a link, %d rounds, %.1f s",
+        agg.rowCount, #rows, agg:keyCount(), agg.bidOnly, noLink, run.linkRound or 0, seconds(run)))
     local verdict = "complete"
     if not complete then
         local why = "the list kept changing"
@@ -405,13 +407,16 @@ end
 ns.on("ITEM_DATA_LOAD_RESULT", onItemDataLoaded)
 
 -- Asks the client to load each distinct item whose rows have no link (one ordinary call per item, inside the
--- scan the player's click started: no timer loop). Returns how many answers are now awaited.
+-- scan the player's click started: no timer loop). One round asks only for items no earlier round asked
+-- (run.linkAskedIds), at most LINK_REQUEST_CAP of them. Returns how many answers are now awaited.
 local function requestLinkItems(run, waiting)
     run.linkPending, run.linkPendingCount = {}, 0
+    run.linkAskedIds = run.linkAskedIds or {}
     if type(C_Item) ~= "table" or type(C_Item.RequestLoadItemDataByID) ~= "function" then return 0 end
     for k = 1, #waiting do
         local id = waiting[k][2]
-        if not run.linkPending[id] and run.linkPendingCount < LINK_REQUEST_CAP then
+        if not run.linkAskedIds[id] and run.linkPendingCount < LINK_REQUEST_CAP then
+            run.linkAskedIds[id] = true
             local ok = pcall(C_Item.RequestLoadItemDataByID, id)
             if ok then
                 run.linkPending[id] = true
@@ -420,6 +425,16 @@ local function requestLinkItems(run, waiting)
         end
     end
     return run.linkPendingCount
+end
+
+-- Is there an item among these rows that no round has asked about yet?
+local function hasUnaskedItem(run, waiting)
+    if type(C_Item) ~= "table" or type(C_Item.RequestLoadItemDataByID) ~= "function" then return false end
+    local asked = run.linkAskedIds or {}
+    for k = 1, #waiting do
+        if not asked[waiting[k][2]] then return true end
+    end
+    return false
 end
 
 local function processReplicate(run, n)
@@ -439,7 +454,8 @@ local function processReplicate(run, n)
     -- an item key that does not exist and leave the real one looking sold out): it waits here for
     -- one more look, and if it still has no link it is left out and the scan is incomplete.
     local waiting = {}   -- { index, itemID, count, buyout, name, qualityID, hasAllInfo }
-    local looked = 0     -- how many of `waiting` have had their second look
+    local looked = 0     -- how many of `waiting` have had their look after the current wait
+    local stillWaiting = {} -- the rows of `waiting` that the look found still without a link
     local noLink = 0
     local marks = { [0] = true, [math.floor(n / 2)] = true, [n - 1] = true } -- rows that go into the signature
     local signature = { string.format("%.0f", n) }
@@ -480,7 +496,7 @@ local function processReplicate(run, n)
         if run.interrupted or not ns.ahOpen then
             -- Closed in the middle of the read: what was read is saved for the record, incomplete.
             run.readOk = false
-            finishReplicate(run, agg, n, unreadable, noLink + (#waiting - looked))
+            finishReplicate(run, agg, n, unreadable, noLink + (#waiting - looked) + #stillWaiting)
             return
         end
         local budget = SLICE
@@ -515,15 +531,19 @@ local function processReplicate(run, n)
             end
         end
         if #waiting > 0 and not run.linkWaitOver then
-            -- M13: ask the client for those items once, then give it a bounded number of frames to answer
-            -- (it fires ITEM_DATA_LOAD_RESULT per item; the wait ends early once all have). With no load API
-            -- nothing is awaited and the rows get their one more look after the same bounded wait.
+            -- M13 / F4: ask the client for those items, then give it a bounded number of frames to answer (it
+            -- fires ITEM_DATA_LOAD_RESULT per item; the wait ends early once all have). With no load API
+            -- nothing is awaited and the rows get their look after the same bounded wait. A round asks only for
+            -- items no earlier round asked; the rounds together never wait past LINK_WAIT_TOTAL_FRAMES.
             if run.linkFrames == nil then
                 run.linkFrames = 0
+                run.linkRound = (run.linkRound or 0) + 1
                 run.linkAsked = requestLinkItems(run, waiting) > 0
             end
             run.linkFrames = run.linkFrames + 1
-            if run.linkFrames < LINK_WAIT_FRAMES and (not run.linkAsked or run.linkPendingCount ~= 0) then
+            run.linkTotalFrames = (run.linkTotalFrames or 0) + 1
+            if run.linkFrames < LINK_WAIT_FRAMES and run.linkTotalFrames < LINK_WAIT_TOTAL_FRAMES
+                and (not run.linkAsked or run.linkPendingCount ~= 0) then
                 ns.after(0, step)
                 return
             end
@@ -539,7 +559,7 @@ local function processReplicate(run, n)
                 agg:add(row[2], variant, row[3], row[4], true)
                 noteRow(row[2], variant, row[5], row[6], row[7], itemLink)
             else
-                noLink = noLink + 1
+                stillWaiting[#stillWaiting + 1] = row
             end
             budget = budget - 1
         end
@@ -547,6 +567,16 @@ local function processReplicate(run, n)
             ns.after(0, step)
             return
         end
+        -- The look is done. Rows still without a link get another round while there are rounds and frames left
+        -- and an item nobody has asked for yet; what is left after that is noLink.
+        if #stillWaiting > 0 and (run.linkRound or 0) < LINK_ROUNDS
+            and (run.linkTotalFrames or 0) < LINK_WAIT_TOTAL_FRAMES and hasUnaskedItem(run, stillWaiting) then
+            waiting, stillWaiting, looked = stillWaiting, {}, 0
+            run.linkFrames, run.linkWaitOver = nil, false
+            ns.after(0, step)
+            return
+        end
+        noLink = #stillWaiting
         -- Every row has been read. What decides completeness is taken now; the sort, the JSON and
         -- the base64 get a frame of their own.
         run.readOk = true
