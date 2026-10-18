@@ -432,6 +432,68 @@ namespace Crucible.Tray.Tests
         }
 
         [Fact]
+        public void CanvasFieldsRoundTrip_AndAreAbsentUntilUsed()
+        {
+            using var dir = new TempDir();
+            string path = dir.File("config.json");
+            TrayConfig c = ConfigStore.ImportDownload(Download)!;
+            ConfigStore.Save(path, c, new FakeProtector());
+            string text = File.ReadAllText(path);
+            Assert.DoesNotContain("canvas", text);
+            c.CanvasEnabled = true; c.CanvasMode = "SPLIT"; c.CanvasDisplays = new[] { "MONITOR\\A\\1" }; c.CanvasMainhand = "MONITOR\\A\\1";
+            c.CanvasSplitSide = "right"; c.CanvasAutoSpan = true; c.CanvasSpanDelaySeconds = 70; c.NoticeShownVersion = 7;
+            ConfigStore.Save(path, c, new FakeProtector());
+            // Ruling P2-R11: the keys and the mode's spelling are the spec's (section 6.7).
+            text = File.ReadAllText(path);
+            Assert.Contains("\"canvasMode\": \"split\"", text);
+            Assert.Contains("\"canvasSpanDelaySeconds\": 70", text);
+            Assert.Contains("\"noticeShownVersion\": 7", text);
+            Assert.DoesNotContain("\"canvasSpanDelay\"", text);
+            Assert.DoesNotContain("\"noticeShown\"", text);
+            TrayConfig back = ConfigStore.Load(path, new FakeProtector())!;
+            Assert.True(back.CanvasEnabled); Assert.Equal("SPLIT", back.CanvasMode); Assert.Equal(new[] { "MONITOR\\A\\1" }, back.CanvasDisplays);
+            Assert.Equal("MONITOR\\A\\1", back.CanvasMainhand); Assert.Equal("right", back.CanvasSplitSide); Assert.True(back.CanvasAutoSpan);
+            Assert.Equal(60, back.CanvasSpanDelaySeconds);   // clamped 0..60
+            Assert.Equal(7, back.NoticeShownVersion);
+            back.CanvasMode = "DUAL";
+            ConfigStore.Save(path, back, new FakeProtector());
+            Assert.Contains("\"canvasMode\": \"dual\"", File.ReadAllText(path));
+        }
+
+        [Theory]
+        [InlineData("split", "SPLIT")]
+        [InlineData("SPLIT", "SPLIT")]
+        [InlineData("Split", "SPLIT")]
+        [InlineData("dual", "DUAL")]
+        [InlineData("DUAL", "DUAL")]
+        public void TheCanvasModeIsReadWhateverItsCase(string stored, string loaded)
+        {
+            using var dir = new TempDir();
+            string path = dir.File("config.json");
+            ConfigStore.Save(path, ConfigStore.ImportDownload(Download)!, new FakeProtector());
+            File.WriteAllText(path, File.ReadAllText(path).TrimEnd('}', '\n') + ",\"canvasMode\":\"" + stored + "\"}");
+            Assert.Equal(loaded, ConfigStore.Load(path, new FakeProtector())!.CanvasMode);
+        }
+
+        [Fact]
+        public void HandEditedCanvasValuesAreHeldToTheirShapes()
+        {
+            using var dir = new TempDir();
+            string path = dir.File("config.json");
+            // Load needs sealed credentials, so the hand edit is made to a file the tray itself saved.
+            ConfigStore.Save(path, ConfigStore.ImportDownload(Download)!, new FakeProtector());
+            string saved = File.ReadAllText(path);
+            string tooLong = new string('x', 513);
+            File.WriteAllText(path, saved.TrimEnd('}', '\n') + ",\"canvasMode\":\"WHAT\",\"canvasSplitSide\":\"up\",\"canvasSpanDelaySeconds\":-4,\"canvasDisplays\":[\"ok\",null,\"\",\"" + tooLong + "\",5],\"canvasMainhand\":\"" + tooLong + "\",\"noticeShownVersion\":-3}");
+            TrayConfig back = ConfigStore.Load(path, new FakeProtector())!;
+            Assert.Equal("DUAL", back.CanvasMode); Assert.Equal("left", back.CanvasSplitSide); Assert.Equal(0, back.CanvasSpanDelaySeconds);
+            // A string-typed contract reads a bare number as its text, which is a non-empty id of the right length - so it stays.
+            Assert.Equal(new[] { "ok", "5" }, back.CanvasDisplays);
+            Assert.Equal("", back.CanvasMainhand);
+            Assert.Equal(0, back.NoticeShownVersion);
+        }
+
+        [Fact]
         public void Keeping_the_addon_up_to_date_defaults_to_on_and_survives_a_round_trip()
         {
             using var dir = new TempDir();

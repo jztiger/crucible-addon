@@ -24,5 +24,15 @@ namespace Crucible.Tray.Tests
             Assert.Contains("holds", SetupWords.FolderWrong);
             Assert.Equal("Pick the folder first.", SetupWords.FolderEmpty);
         }
+
+        [Fact]
+        public void The_Displays_window_words_are_as_the_spec_gives_them()
+        {
+            // Spec 2026-10-15 §6.5 (ruling S-R2): the Displays window's title and its three switches.
+            Assert.Equal("Crucible - Displays", SetupWords.DisplaysTitle);
+            Assert.Equal("Use Crucible Canvas (two screens)", SetupWords.CanvasEnable);
+            Assert.Equal("Span automatically when WoW starts, after", SetupWords.CanvasAuto);
+            Assert.Equal("Single wide display, split in half", SetupWords.CanvasSplit);
+        }
     }
 }

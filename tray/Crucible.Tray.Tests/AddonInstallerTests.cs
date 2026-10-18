@@ -407,5 +407,53 @@ namespace Crucible.Tray.Tests
             Assert.Equal(EmptyData, System.IO.File.ReadAllText(Path.Combine(addons, "Elsewhere", "Data.lua")));
             NothingElseTouched(addons, "Tallybook", "Elsewhere");
         }
+
+        [Fact]
+        public void TheCanvasAddon_CarriesTopologyAndRecoveryAcrossAnUpdate_AndTheTallybookRetirementNeverTouchesIt()
+        {
+            using var dir = new TempDir();
+            string folder = Path.Combine(dir.Path, "Interface", "AddOns", "CrucibleCanvas");
+            // Our own old Tallybook folder, exactly as the Crucible install would retire it - but never from a Canvas install.
+            string addons = Path.Combine(dir.Path, "Interface", "AddOns");
+            string old = OldFolder(addons);
+            string before = Snapshot(old);
+            var v1 = new AddonManifest { Version = "0.1.0", Files = new List<AddonFile> {
+                File_("CrucibleCanvas.toc", "## Interface: 16001\n## Version: 0.1.0\n\nInit.lua\n"), File_("Init.lua", "-- 1\n"),
+                File_("Topology.lua", "CrucibleCanvasTopology = {}\n"), File_("Recovery.lua", "CrucibleCanvasRecovery = {}\n") } };
+            AddonInstaller.Install(folder, v1, AddonSpec.Canvas);
+            File.WriteAllText(Path.Combine(folder, "Topology.lua"), "CrucibleCanvasTopology = { schema = 1 }\n");
+            File.WriteAllText(Path.Combine(folder, "Recovery.lua"), "CrucibleCanvasRecovery = { schema = 1, revision = 3, state = \"QUJD\" }\n");
+            var v2 = new AddonManifest { Version = "0.2.0", Files = v1.Files.Select(f => f.Name == "CrucibleCanvas.toc" ? File_(f.Name, f.Content.Replace("0.1.0", "0.2.0")) : f).ToList() };
+            string said = AddonInstaller.Install(folder, v2, AddonSpec.Canvas);
+            Assert.Equal("0.2.0", AddonInstaller.InstalledVersion(folder, AddonSpec.Canvas));
+            Assert.Equal("CrucibleCanvasTopology = { schema = 1 }\n", File.ReadAllText(Path.Combine(folder, "Topology.lua")));
+            Assert.Contains("revision = 3", File.ReadAllText(Path.Combine(folder, "Recovery.lua")));
+            Assert.DoesNotContain("Tallybook", said);
+            Assert.True(Directory.Exists(old));
+            Assert.Equal(before, Snapshot(old));
+        }
+
+        [Fact]
+        public void A_manifest_without_the_specs_own_toc_is_refused_before_anything_is_written()
+        {
+            using var dir = new TempDir();
+            string addons = Path.Combine(dir.Path, "Interface", "AddOns");
+            Directory.CreateDirectory(addons);
+            string folder = Path.Combine(addons, "CrucibleCanvas");
+            var e = Assert.Throws<InvalidOperationException>(() => AddonInstaller.Install(folder, Good(), AddonSpec.Canvas));   // the Crucible addon's manifest
+            Assert.Equal("the addon on offer is not CrucibleCanvas", e.Message);
+            Assert.Empty(Directory.GetFileSystemEntries(addons));      // no folder, no staged folder
+        }
+
+        [Fact]
+        public void InstalledVersion_ReadsEachAddonsOwnToc()
+        {
+            using var dir = new TempDir();
+            string folder = Path.Combine(dir.Path, "CrucibleCanvas");
+            Directory.CreateDirectory(folder);
+            File.WriteAllText(Path.Combine(folder, "CrucibleCanvas.toc"), "## Version: 0.3.0\n");
+            Assert.Equal("0.3.0", AddonInstaller.InstalledVersion(folder, AddonSpec.Canvas));
+            Assert.Null(AddonInstaller.InstalledVersion(folder, AddonSpec.Crucible));
+        }
     }
 }

@@ -1,0 +1,21 @@
+## Interface: 16001
+## AllowLoadGameType: camelot
+## Title: Crucible Canvas
+## IconTexture: Interface\AddOns\CrucibleCanvas\Icon.tga
+## Notes: Keeps the game and HUD on your Mainhand screen and opens the map, bags and panels on your other screen. Spanning the window is done by the Crucible tray app. Reads nothing about other players.
+## Author: jztiger
+## Version: 0.1.0
+## SavedVariables: CrucibleCanvasDB
+
+Geometry.lua
+State.lua
+Topology.lua
+Recovery.lua
+Init.lua
+Viewport.lua
+Canvas.lua
+Dock.lua
+EditMode.lua
+Bags.lua
+Options.lua
+Wizard.lua

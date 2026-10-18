@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -87,8 +88,9 @@ namespace Crucible.Tray
                     ConfigStore.Save(Paths.Config, config, protector);
                 }
 
-                // A newer notice means the program does something they have not agreed to yet: ask again.
-                if (config.AcceptedNoticeVersion < Notice.VersionOf(SetupForm.NoticeText()) || !GameFolders.LooksLikeWow(config.WowFolder))
+                // A newer notice means the program does something they have not agreed to yet: ask again. A v6 acceptance
+                // carries over to v7 (Notice.IsAccepted), which the tray then shows once to read.
+                if (!Notice.IsAccepted(config.AcceptedNoticeVersion, Notice.VersionOf(SetupForm.NoticeText())) || !GameFolders.LooksLikeWow(config.WowFolder))
                 {
                     using (var setup = new SetupForm(config, true))
                     {
@@ -333,6 +335,37 @@ namespace Crucible.Tray
                     return File.Exists(p.Exe) && File.Exists(p.Old) && !File.Exists(p.Staged);
                 }
                 finally { try { Directory.Delete(dir, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+            });
+
+            Check("displays enumerate under Per-Monitor V2 with stable ids and physical rects", () =>
+            {
+                IReadOnlyList<DisplayInfo> displays = new WindowsWindowOps().Displays();
+                lines.Add("     " + WindowsWindowOps.Describe(displays).Replace("\n", "\n     "));
+                return displays.Count >= 1 && displays.All(d => d.Id.Length > 0 && d.Bounds.Width > 0 && d.Bounds.Height > 0)
+                    && displays.Count(d => d.IsPrimary) == 1 && displays.Select(d => d.Id).Distinct().Count() == displays.Count;
+            });
+            Check("the WoW window finder runs dry (no span): top-level windows enumerate with exe paths", () =>
+            {
+                // An always-true program rule, so every read still runs (ruling S-R19); only the count is printed.
+                IReadOnlyList<WindowInfo> windows = new WindowsWindowOps().TopLevelWindows(_ => true);
+                // this very process has a window only when the tray runs; the self-test is headless, so just prove enumeration
+                lines.Add("     windows seen (visible, titled, with an exe path): " + windows.Count);
+                return true;   // ruling S-R1: enumeration completing is the pass - CI runs headless and may see no window at all
+            });
+            Check("the program rule gates which windows are read", () => new WindowsWindowOps().TopLevelWindows(_ => false).Count == 0);
+            Check("a topology renders to a temp file and reads back byte for byte", () =>
+            {
+                string dir = Path.Combine(Path.GetTempPath(), "crucible-selftest-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(dir);
+                try
+                {
+                    var plan = new PlanResult { Ok = true, Mode = "DUAL", Window = new Rect(0, 0, 5120, 1440), Mainhand = new Rect(2560, 0, 2560, 1440), Workspace = new Rect(0, 0, 2560, 1440), MainhandId = "a", WorkspaceId = "b" };
+                    string text = TopologyFile.Render(plan, AppInfo.Version, DateTime.UtcNow);
+                    string path = Path.Combine(dir, TopologyFile.Name);
+                    AtomicFile.Write(path, TopologyFile.Bytes(text));
+                    return File.ReadAllText(path) == text && !File.Exists(path + AtomicFile.TempSuffix);
+                }
+                finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
             });
 
             lines.Add(ok ? "selftest ok" : "selftest FAILED");

@@ -19,5 +19,17 @@ namespace Crucible.Tray
 
         public const string BrowseDescription =
             "Pick the folder that holds your World of Warcraft: Forever game folder (it looks like _something_)";
+
+        /// <summary>Beside the Crucible Canvas switch (spec 2026-10-15 §8).</summary>
+        public const string CanvasSwitch = "If you turn on Crucible Canvas, Crucible will also move and resize your WoW window to span the two screens you choose; it never reads or changes anything inside the game.";
+
+        /// <summary>The Displays window (spec 2026-10-15 §6.5): its title and its three switches.</summary>
+        public const string DisplaysTitle = "Crucible - Displays";
+
+        public const string CanvasEnable = "Use Crucible Canvas (two screens)";
+
+        public const string CanvasAuto = "Span automatically when WoW starts, after";
+
+        public const string CanvasSplit = "Single wide display, split in half";
     }
 }

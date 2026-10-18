@@ -32,6 +32,18 @@ namespace Crucible.Tray
         /// </summary>
         public IReadOnlyList<string> Products { get; set; } = ForeverProducts.Default;
 
+        /// <summary>Spec 2026-10-15 (Crucible Canvas): the Displays window's choices. All off/empty until the person turns it on.</summary>
+        public bool CanvasEnabled { get; set; }
+        public string CanvasMode { get; set; } = "DUAL";
+        public IReadOnlyList<string> CanvasDisplays { get; set; } = new string[0];
+        public string CanvasMainhand { get; set; } = "";
+        public string CanvasSplitSide { get; set; } = "left";
+        public bool CanvasAutoSpan { get; set; }
+        public int CanvasSpanDelaySeconds { get; set; } = 10;
+        /// <summary>The notice version last shown in the Close-only window (spec §8); 0 = never.</summary>
+        public int NoticeShownVersion { get; set; }
+        public CanvasChoice CanvasChoice() => new CanvasChoice { Mode = CanvasMode, DisplayIds = CanvasDisplays, MainhandId = CanvasMainhand.Length == 0 ? null : CanvasMainhand, SplitSide = CanvasSplitSide };
+
         /// <summary>Safe to log: no credential, no folder.</summary>
         public override string ToString() =>
             "TrayConfig(api=" + Api + ", bringDataBack=" + BringDataBack + ", paused=" + Paused + ")";

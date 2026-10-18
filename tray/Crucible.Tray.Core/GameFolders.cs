@@ -80,13 +80,16 @@ namespace Crucible.Tray
         }
 
         /// <summary>Where the addon IS installed - a folder with our .toc in it. These are what an update replaces.</summary>
-        public static IReadOnlyList<string> AddonFolders(string wow, IReadOnlyList<string> products)
+        public static IReadOnlyList<string> AddonFolders(string wow, IReadOnlyList<string> products) => AddonFolders(wow, products, AddonSpec.Crucible);
+
+        /// <summary>Where <paramref name="spec"/>'s addon IS installed - a folder with its own .toc in it.</summary>
+        public static IReadOnlyList<string> AddonFolders(string wow, IReadOnlyList<string> products, AddonSpec spec)
         {
             var found = new List<string>();
             foreach (string product in Products(wow, products))
             {
-                string folder = Path.Combine(product, "Interface", "AddOns", AddonName);
-                if (File.Exists(Path.Combine(folder, TocName))) found.Add(folder);
+                string folder = Path.Combine(product, "Interface", "AddOns", spec.Name);
+                if (File.Exists(Path.Combine(folder, spec.TocName))) found.Add(folder);
             }
             return found;
         }
@@ -96,10 +99,26 @@ namespace Crucible.Tray
         /// a guess: it goes into the first listed product, in the list's order, that is there - never an unlisted
         /// one, never retail's. With none of them there, the person installs it themselves.
         /// </summary>
-        public static string? InstallTarget(string wow, IReadOnlyList<string> products)
+        public static string? InstallTarget(string wow, IReadOnlyList<string> products) => InstallTarget(wow, products, AddonSpec.Crucible);
+
+        /// <summary>Where a FIRST install of <paramref name="spec"/>'s addon goes, by the same rule; or null.</summary>
+        public static string? InstallTarget(string wow, IReadOnlyList<string> products, AddonSpec spec)
         {
             List<string> here = Products(wow, products);
-            return here.Count == 0 ? null : Path.Combine(here[0], "Interface", "AddOns", AddonName);
+            return here.Count == 0 ? null : Path.Combine(here[0], "Interface", "AddOns", spec.Name);
+        }
+
+        /// <summary>&lt;wow&gt;\&lt;product&gt;\WTF\Account\*\SavedVariables\&lt;Name&gt;.lua only - no .bak, no old name (the Canvas addon has neither).</summary>
+        public static IReadOnlyList<string> SavedFilesOf(string wow, IReadOnlyList<string> products, AddonSpec spec)
+        {
+            var found = new List<string>();
+            foreach (string product in Products(wow, products))
+                foreach (string account in Children(Path.Combine(product, "WTF", "Account")))
+                {
+                    string file = Path.Combine(account, "SavedVariables", spec.SavedName);
+                    if (File.Exists(file)) found.Add(file);
+                }
+            return found;
         }
 
         /// <summary>

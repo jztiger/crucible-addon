@@ -20,6 +20,10 @@ namespace Crucible.Tray
         private readonly CheckBox bringDataBack = new CheckBox { AutoSize = true, Text = "Bring data back (write the shared Data.lua into the Crucible addon's folder)" };
         private readonly CheckBox keepAddon = new CheckBox { AutoSize = true, Text = "Keep the Crucible addon installed and up to date" };
         private readonly Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90 };
+        private readonly Button displays = new Button { Text = "Displays...", Width = 100 };
+
+        /// <summary>Settings only: the person pressed "Displays..."; the tray opens the Displays window over this one.</summary>
+        public event Action? DisplaysRequested;
 
         /// <summary>Settings only: the credentials of a settings file the person loaded here; null when they did not.</summary>
         public TrayConfig? NewCredentials { get; private set; }
@@ -32,7 +36,9 @@ namespace Crucible.Tray
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = true;
-            ClientSize = new Size(640, 610);
+            // Settings has the Displays... row above the bottom row; first run does not (the tray that opens it is not running yet).
+            int bottom = firstRun ? 568 : 598;
+            ClientSize = new Size(640, bottom + 42);
             Font = SystemFonts.MessageBoxFont;
 
             var notice = new TextBox
@@ -63,11 +69,23 @@ namespace Crucible.Tray
 
             if (!firstRun)
             {
+                displays.Location = new Point(12, 552);   // a clear gap below the last switch (512) and above the bottom row
+                displays.Click += (s, e) =>
+                {
+                    // Guarded: an exception escaping a click handler would end the tray.
+                    try { DisplaysRequested?.Invoke(); }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, "The Displays window could not open (" + ex.GetType().Name + ").", AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                };
+                Controls.Add(displays);
+
                 // A new download does not retire the key of an older one. A running copy is refused ("The server refused
                 // this PC's credentials", red) only when the member revoked THIS PC on Your PCs, or the owner revoked the
                 // member; this is how it is given a fresh settings file without hunting for the folder it lives in.
-                var load = new Button { Text = "Load new settings file...", Location = new Point(12, 568), Width = 190 };
-                var loaded = new Label { AutoSize = true, Location = new Point(210, 573), ForeColor = Color.SeaGreen };
+                var load = new Button { Text = "Load new settings file...", Location = new Point(12, bottom), Width = 190 };
+                var loaded = new Label { AutoSize = true, Location = new Point(210, bottom + 5), ForeColor = Color.SeaGreen };
                 load.Click += (s, e) =>
                 {
                     TrayConfig? fresh = SettingsFile.Pick(this, new TrayLog(Paths.Log));
@@ -79,8 +97,8 @@ namespace Crucible.Tray
                 Controls.Add(loaded);
             }
 
-            ok.Location = new Point(442, 568);
-            var cancel = new Button { Text = firstRun ? "Quit" : "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Location = new Point(538, 568) };
+            ok.Location = new Point(442, bottom);
+            var cancel = new Button { Text = firstRun ? "Quit" : "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Location = new Point(538, bottom) };
             AcceptButton = ok;
             CancelButton = cancel;
 
@@ -94,6 +112,8 @@ namespace Crucible.Tray
         {
             config.WowFolder = folder.Text;
             config.AcceptedNoticeVersion = understand.Checked ? Notice.VersionOf(NoticeText()) : 0;
+            // Ticked here, the notice has been read: the Close-only showing of a carried-over version is not owed for it.
+            if (understand.Checked) config.NoticeShownVersion = Notice.VersionOf(NoticeText());
             config.StartWithWindows = startWithWindows.Checked;
             config.BringDataBack = bringDataBack.Checked;
             config.KeepAddonUpToDate = keepAddon.Checked;

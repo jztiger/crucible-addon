@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -36,6 +37,10 @@ namespace Crucible.Tray
         /// <summary>Spec 2026-10-12: a verified newer tray is written beside the exe and waits for a quiet moment.</summary>
         public string? TrayStaged { get; set; }
         public Refusal? TrayUpdateFailed { get; set; }
+        /// <summary>The Canvas addon version installed this pass (spec 2026-10-15 §7.2), or null when nothing was installed.</summary>
+        public string? CanvasAddonInstalled { get; set; }
+        /// <summary>How many Recovery.lua files were written this pass (spec §6.6).</summary>
+        public int RecoveryWritten { get; set; }
         public TrayState State { get; set; } = TrayState.Ok;
         /// <summary>Plain words for the tooltip when the state is not Ok.</summary>
         public string Reason { get; set; } = "";
@@ -51,6 +56,8 @@ namespace Crucible.Tray
         public static readonly TimeSpan FetchEvery = TimeSpan.FromMinutes(30);
         /// <summary>An addon version comes out rarely; the check is cheap but there is no point being eager.</summary>
         public static readonly TimeSpan AddonEvery = TimeSpan.FromHours(6);
+        /// <summary>Ruling P2-R16: a canvas manifest request that got no answer is tried again this much later.</summary>
+        public static readonly TimeSpan CanvasRetryAfter = TimeSpan.FromMinutes(1);
         /// <summary>The owner's item cache changes as they play; there is no point sending it more often (spec 2026-09-26).</summary>
         public static readonly TimeSpan ItemCacheEvery = TimeSpan.FromHours(6);
         /// <summary>The server's own cap on a saved file. A bigger one is not ours.</summary>
@@ -84,6 +91,14 @@ namespace Crucible.Tray
         private string? addonEtag;
         private DateTime? addonCheckedUtc;
         private bool addonUnsure;
+        private string? canvasEtag;
+        private DateTime? canvasCheckedUtc;
+        /// <summary>The canvas fetch got no answer and that was logged: said once until an answer comes.</summary>
+        private bool canvasUnansweredLogged;
+        /// <summary>Each Canvas saved file read once per version, like <see cref="hashed"/>: a stable file is stable every
+        /// pass, and a partial one must not be re-read and logged every two seconds until the game writes it again.</summary>
+        private readonly Dictionary<string, (long length, DateTime modified, Extracted? got)> canvasRead =
+            new Dictionary<string, (long, DateTime, Extracted?)>(StringComparer.OrdinalIgnoreCase);
         private DateTime? itemCacheCheckedUtc;
         private readonly string? exePath;
         private readonly ISigner? signer;
@@ -140,9 +155,13 @@ namespace Crucible.Tray
             var report = new CycleReport();
             DateTime now = nowUtc();
 
+            bool wow = GameFolders.LooksLikeWow(config.WowFolder);
+            // Ruling P2-R8: every pass, Paused, refused and waiting ones included - it is local, only reads the game's saved
+            // file and only writes Recovery.lua, and a server that is down at logout must not lose that session's layout.
+            // Before the Canvas install below, in the same thread: the install carries Recovery.lua across.
+            if (wow) KeepRecoveryCurrent(report, now);
             if (config.Paused) return Done(report, TrayState.Paused, "Paused");
-            if (!GameFolders.LooksLikeWow(config.WowFolder))
-                return Done(report, TrayState.NeedsAttention, "The World of Warcraft folder is not there");
+            if (!wow) return Done(report, TrayState.NeedsAttention, "The World of Warcraft folder is not there");
             if (force)
             {
                 refused = false;
@@ -197,6 +216,9 @@ namespace Crucible.Tray
                 log.Write("refused: " + stop + " - stopped until asked again");
                 return Done(report, TrayState.NeedsAttention, "The server refused this PC's credentials");
             }
+            // After this pass's recovery write (at the top): the install copies the installed Recovery.lua and Topology.lua
+            // into the new folder, so nothing written before it is lost.
+            await KeepCanvasAddonCurrent(report, now, force).ConfigureAwait(false);
 
             await KeepItemCacheSent(now, force).ConfigureAwait(false);
             await KeepTrayCurrent(report, now, force).ConfigureAwait(false);
@@ -376,6 +398,130 @@ namespace Crucible.Tray
                 }
             }
             return null;
+        }
+
+        /// <summary>Spec 2026-10-15 §7.2: the Canvas addon is installed and kept current only while the person has Canvas switched
+        /// on, whatever the AH addon's update switch says (ruling P2-R12); switched off, the folder stays and is left alone.
+        /// Checked on the AH addon's cadence (the first check at once); a request that got no answer is tried again after
+        /// <see cref="CanvasRetryAfter"/> (ruling P2-R16).</summary>
+        private async Task KeepCanvasAddonCurrent(CycleReport report, DateTime now, bool force)
+        {
+            if (!config.CanvasEnabled) return;
+            IReadOnlyList<string> folders = GameFolders.AddonFolders(config.WowFolder, config.Products, AddonSpec.Canvas);
+            bool missing = folders.Count == 0;
+            bool canPlace = !missing || GameFolders.InstallTarget(config.WowFolder, config.Products, AddonSpec.Canvas) != null;
+            // Ruling P2-R4: after any answered check - a 404 before the server offers Canvas included - the next one waits
+            // the cadence; "Upload now" (force) retries sooner. Ruling P2-R16: a request that got no answer at all is tried
+            // again after a minute (not every pass), and said in the log once until an answer comes.
+            bool due = force || canvasCheckedUtc == null || now - canvasCheckedUtc.Value >= AddonEvery;
+            if (!due) return;
+            (FetchResult result, AddonManifest? manifest, string? tag) = await client.FetchCanvasAddonAsync(missing && canPlace ? null : canvasEtag).ConfigureAwait(false);
+            if (!client.ManifestAnswered)
+            {
+                if (!canvasUnansweredLogged) log.Write("no canvas addon to install this time: " + client.LastError);
+                canvasUnansweredLogged = true;
+                canvasCheckedUtc = now - AddonEvery + CanvasRetryAfter;
+                return;
+            }
+            canvasUnansweredLogged = false;
+            canvasCheckedUtc = now;
+            if (result != FetchResult.Changed || manifest == null)
+            {
+                if (result != FetchResult.NotModified) log.Write("no canvas addon to install this time: " + client.LastError);
+                return;
+            }
+            canvasEtag = tag;
+            if (folders.Count == 0)
+            {
+                string? fresh = GameFolders.InstallTarget(config.WowFolder, config.Products, AddonSpec.Canvas);
+                if (fresh == null) return;
+                folders = new[] { fresh };
+            }
+            foreach (string folder in folders)
+            {
+                if (AddonInstaller.InstalledVersion(folder, AddonSpec.Canvas) == manifest.Version) continue;
+                try
+                {
+                    log.Write("canvas: " + AddonInstaller.Install(folder, manifest, AddonSpec.Canvas));
+                    report.CanvasAddonInstalled = manifest.Version;
+                }
+                catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is InvalidOperationException)
+                {
+                    // The installer's own refusals carry checked names only; an OS message can carry a path.
+                    log.Write("could not install the canvas addon: " + (e is InvalidOperationException ? e.Message : e.GetType().Name));
+                }
+            }
+        }
+
+        /// <summary>Spec §6.6: the newest account's revision of the Canvas saved file (the stable file written last), lifted by
+        /// regex once the file is stable, becomes Recovery.lua in every installed Canvas folder - only when that revision is higher
+        /// than the one in the Recovery.lua on disk, read every pass (an outside reinstall puts the placeholder back). A partial
+        /// file is refused whole and simply tried again next pass.</summary>
+        private void KeepRecoveryCurrent(CycleReport report, DateTime now)
+        {
+            if (!config.CanvasEnabled) return;
+            IReadOnlyList<string> folders = GameFolders.AddonFolders(config.WowFolder, config.Products, AddonSpec.Canvas);
+            if (folders.Count == 0) return;
+            // Ruling P2-R5: the stable file written last decides the account (ties to the second: the higher revision).
+            // An older account's higher revision never wins; when the deciding file is not usable, nothing is written
+            // this pass - it is tried again on the next.
+            Extracted? best = null;
+            long newestSecond = long.MinValue;
+            foreach (string path in GameFolders.SavedFilesOf(config.WowFolder, config.Products, AddonSpec.Canvas))
+            {
+                long second = long.MinValue;
+                Extracted? e = null;
+                try
+                {
+                    var info = new FileInfo(path);
+                    if (!info.Exists || info.Length == 0 || info.Length > RecoveryFile.MaxSavedBytes) continue;
+                    if (!stability.IsStable(path, info.Length, info.LastWriteTimeUtc, now)) continue;
+                    second = info.LastWriteTimeUtc.Ticks / TimeSpan.TicksPerSecond;
+                    if (canvasRead.TryGetValue(path, out var seen) && seen.length == info.Length && seen.modified == info.LastWriteTimeUtc)
+                        e = seen.got;
+                    else
+                    {
+                        e = RecoveryFile.Extract(Encoding.UTF8.GetString(ReadShared(path)), out string reason);
+                        canvasRead[path] = (info.Length, info.LastWriteTimeUtc, e);
+                        if (e == null) log.Write("canvas saved file not usable yet: " + reason);
+                    }
+                }
+                // A stable file that cannot be read still counts as written last: it is not passed over for an older one.
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+                if (second == long.MinValue) continue;
+                if (second > newestSecond) { newestSecond = second; best = e; }
+                else if (second == newestSecond && e != null && (best == null || e.Revision > best.Revision)) best = e;
+            }
+            if (best == null) return;
+            foreach (string folder in folders)
+            {
+                string target = Path.Combine(folder, RecoveryFile.Name);
+                if (best.Revision <= RevisionOnDisk(target)) continue;
+                try
+                {
+                    AtomicFile.Write(target, RecoveryFile.Bytes(RecoveryFile.Render(best.Revision, best.Base64)));
+                    report.RecoveryWritten++;
+                    log.Write("wrote Recovery.lua, revision " + best.Revision);
+                }
+                catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+                {
+                    log.Write("could not write Recovery.lua: " + e.GetType().Name);
+                }
+            }
+        }
+
+        private static readonly Regex RecoveryRevision = new Regex(@"revision = ([0-9]{1,9}),", RegexOptions.CultureInvariant);
+        private static int RevisionOnDisk(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return -1;
+                Match m = RecoveryRevision.Match(File.ReadAllText(path, Encoding.UTF8));
+                // [0-9], not \d, and TryParse: a hand-edited file must never throw out of the pass.
+                return m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out int r) ? r : -1;
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { return -1; }
         }
 
         /// <summary>

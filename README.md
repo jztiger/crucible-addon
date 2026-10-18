@@ -99,6 +99,13 @@ what every member reads before downloading it. It is useless without a membershi
 source is here so anyone can read what it does.
 Build: `dotnet build tray/Tallybook.Tray -c Release`; tests: `dotnet test tray/Tallybook.Tray.Tests`.
 
+## Crucible Canvas (`CrucibleCanvas/`)
+
+**Crucible Canvas** is a second, optional addon in this repository: it keeps the game and HUD on one screen and opens
+the map, bags and panels on the other. The tray app spans the WoW window across the two screens you choose (it moves
+and resizes that window and does nothing else to the game) and writes two small generated files into the addon's
+folder, `Topology.lua` and `Recovery.lua`. It is off until you turn it on in the tray's Displays window.
+
 ## About this repository
 
 This is the code of what our group is handed - the addon, and the optional tray app - published so that anyone can read

@@ -1,5 +1,10 @@
-Crucible changelog - newest first. Features inside the notice's scope are listed here (notice version 6).
+Crucible changelog - newest first. Features inside the notice's scope are listed here (notice version 7).
 
+0.100.0 - Crucible Canvas: a second addon and a Displays window in the tray. Tick two screens, choose the Mainhand
+         one, press Span WoW now: the game and HUD stay on the Mainhand screen and the map, bags and panels open on
+         the other and come back where you left them, across /reload and a restart. Off until you turn it on in the
+         tray's Displays window. The notice gains a paragraph about it (version 7) and is shown once; nothing to
+         re-accept. "View notice" is in the menu.
 0.99.4 - the tray app keeps itself up to date: within six hours of a new build it replaces itself at a quiet
          moment and says so once. Only a build signed by the same publisher is ever taken, checked by Windows
          before it runs. Download the tray one more time for this; after that, never again.

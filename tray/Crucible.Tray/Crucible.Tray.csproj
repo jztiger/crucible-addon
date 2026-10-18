@@ -14,9 +14,10 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <Version>0.99.5</Version>
+    <Version>0.100.0</Version>
     <Product>Crucible</Product>
-    <Description>Sends the Crucible addon's saved file to your group's server and brings the data file back; on the owner's install only, also sends the game's own item cache. Reads and writes nothing else.</Description>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Description>Sends the Crucible addon's saved file to your group's server and brings the data file back; on the owner's install only, also sends the game's own item cache. With Crucible Canvas on, it also finds the WoW window by its program and moves it and keeps the Canvas addon's files current. Reads and writes nothing else.</Description>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System.Windows.Forms" />

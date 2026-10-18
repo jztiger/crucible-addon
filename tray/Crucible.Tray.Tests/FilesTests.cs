@@ -101,6 +101,25 @@ namespace Crucible.Tray.Tests
             Directory.CreateDirectory(Path.Combine(dir.Path, "_classic_beta_"));
             Assert.True(GameFolders.LooksLikeWow(dir.Path));
         }
+
+        [Fact]
+        public void CanvasLookups_UseTheCanvasFolderAndSavedFile_AndNeverTheBak()
+        {
+            using var dir = new TempDir();
+            string product = Path.Combine(dir.Path, "_classic_beta_");
+            string addons = Path.Combine(product, "Interface", "AddOns");
+            Directory.CreateDirectory(Path.Combine(addons, "CrucibleCanvas"));
+            File.WriteAllText(Path.Combine(addons, "CrucibleCanvas", "CrucibleCanvas.toc"), "## Version: 0.1.0\n");
+            string saved = Path.Combine(product, "WTF", "Account", "ACC", "SavedVariables");
+            Directory.CreateDirectory(saved);
+            File.WriteAllText(Path.Combine(saved, "CrucibleCanvas.lua"), "x"); File.WriteAllText(Path.Combine(saved, "CrucibleCanvas.lua.bak"), "y");
+            File.WriteAllText(Path.Combine(saved, "Crucible.lua"), "z");
+            string[] products = { "_classic_beta_" };
+            Assert.Equal(new[] { Path.Combine(addons, "CrucibleCanvas") }, GameFolders.AddonFolders(dir.Path, products, AddonSpec.Canvas));
+            Assert.Empty(GameFolders.AddonFolders(dir.Path, products, AddonSpec.Crucible));
+            Assert.Equal(Path.Combine(addons, "CrucibleCanvas"), GameFolders.InstallTarget(dir.Path, products, AddonSpec.Canvas));
+            Assert.Equal(new[] { Path.Combine(saved, "CrucibleCanvas.lua") }, GameFolders.SavedFilesOf(dir.Path, products, AddonSpec.Canvas));
+        }
     }
 
     public class StabilityTests

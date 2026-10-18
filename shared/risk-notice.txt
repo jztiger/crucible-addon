@@ -1,4 +1,4 @@
-Crucible notice, version 6
+Crucible notice, version 7
 
 Before you install - please read this
 
@@ -13,7 +13,9 @@ When you open your mailbox, the addon notes your own auction sales and returns -
 
 It also installs the Crucible addon for you, and replaces it when a newer version comes out, so you never have to copy folders about. It writes nothing anywhere else in your game, and it keeps your own prices when it updates. You can switch that off in Settings, and Settings can also put the addon back from the public code on GitHub, without asking our server at all.
 
-That is all. It does not touch the game while it runs, and it never sends your account name, your character names or any password. It reads nothing else on your PC, with one exception that is not about you: on the owner's own PC only, it also reads the game's item cache file - eleven tables about items, such as their names and stats - so the website can describe every item. The server asks for that from the owner's install alone; nobody else's tray app ever reads it.
+That is all. It does not touch anything inside the game while it runs, and it never sends your account name, your character names or any password. It reads nothing else on your PC, with one exception that is not about you: on the owner's own PC only, it also reads the game's item cache file - eleven tables about items, such as their names and stats - so the website can describe every item. The server asks for that from the owner's install alone; nobody else's tray app ever reads it.
+
+If you turn on Crucible Canvas, Crucible will also move and resize your WoW window to span the two screens you choose; it never reads or changes anything inside the game. This is off until you turn it on in Settings > Displays, and Restore window puts your window back. While it is on, Crucible also installs the small Crucible Canvas addon, reads the one file that addon saves (where you left your panels), and writes two files back into that addon's own folder. To find your WoW window it looks at which program each open window belongs to, and nothing else about them.
 
 WHAT THE ADDON MAY READ
 Inside the game, Crucible may read: your auction house scans, your mailbox, your professions and recipes, your bags, your own quest log, and where your own character is on the map when you talk to a quest giver, trainer, vendor, flight master or innkeeper, or when a quest objective ticks. The quest part is so the group builds its own map of where quests and NPCs are, which it keeps after the beta; it is on unless you switch "Record my quests" off on the Your PCs page of the website, and switching it off takes what you sent out of the group's map and keeps none from then on. It may never read: chat, other players' names or positions, your account name, your character names, or anything outside the game's own addon interface.

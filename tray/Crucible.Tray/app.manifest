@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <!-- Ruling S-R9: the process stays DPI-unaware, as every shipped tray has been, so the WinForms dialogs render exactly as
+       before. Crucible Canvas's physical-pixel needs (spec 2026-10-15 §6.4) are met by the Per-Monitor V2 THREAD context
+       WindowsWindowOps sets around each display enumeration and each window move or read (DpiScope). -->
+  <!-- Ruling S-R7: a manifest of our own replaces the compiler's default one, so the execution level it carried must be
+       restated (requestedExecutionLevel below): Crucible runs with the person's own rights, never asks to elevate, and is not virtualised. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/> <!-- Windows 10 and 11 -->
+    </application>
+  </compatibility>
+</assembly>

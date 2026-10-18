@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.Serialization;
 using System.Text;
 
@@ -33,6 +34,16 @@ namespace Crucible.Tray
             [DataMember(Name = "products", Order = 13, EmitDefaultValue = false)] public List<string?>? Products { get; set; }
             [DataMember(Name = "updateNudged", Order = 14, EmitDefaultValue = false)] public string? UpdateNudged { get; set; }
             [DataMember(Name = "failedUpdate", Order = 15, EmitDefaultValue = false)] public string? FailedUpdate { get; set; }
+            // Spec 2026-10-15 (Crucible Canvas) section 6.7: all optional, so an older tray ignores them and a config never used with Canvas gains no keys.
+            // The spec's names and spellings (ruling P2-R11): canvasMode is "dual"/"split" on disk, "DUAL"/"SPLIT" in the core.
+            [DataMember(Name = "canvasEnabled", Order = 16, EmitDefaultValue = false)] public bool? CanvasEnabled { get; set; }
+            [DataMember(Name = "canvasMode", Order = 17, EmitDefaultValue = false)] public string? CanvasMode { get; set; }
+            [DataMember(Name = "canvasDisplays", Order = 18, EmitDefaultValue = false)] public List<string?>? CanvasDisplays { get; set; }
+            [DataMember(Name = "canvasMainhand", Order = 19, EmitDefaultValue = false)] public string? CanvasMainhand { get; set; }
+            [DataMember(Name = "canvasSplitSide", Order = 20, EmitDefaultValue = false)] public string? CanvasSplitSide { get; set; }
+            [DataMember(Name = "canvasAutoSpan", Order = 21, EmitDefaultValue = false)] public bool? CanvasAutoSpan { get; set; }
+            [DataMember(Name = "canvasSpanDelaySeconds", Order = 22, EmitDefaultValue = false)] public int? CanvasSpanDelaySeconds { get; set; }
+            [DataMember(Name = "noticeShownVersion", Order = 23, EmitDefaultValue = false)] public int? NoticeShownVersion { get; set; }
         }
 
         /// <summary>The server's crucible.config.json. Null when it is not a complete one.</summary>
@@ -83,6 +94,14 @@ namespace Crucible.Tray
                 Products = new List<string?>(c.Products),
                 UpdateNudged = c.NudgedVersion.Length == 0 ? null : c.NudgedVersion,
                 FailedUpdate = c.FailedUpdateVersion.Length == 0 ? null : c.FailedUpdateVersion,
+                CanvasEnabled = c.CanvasEnabled ? true : (bool?)null,
+                CanvasMode = c.CanvasEnabled || c.CanvasDisplays.Count > 0 ? (c.CanvasMode == "SPLIT" ? "split" : "dual") : null,
+                CanvasDisplays = c.CanvasDisplays.Count == 0 ? null : new List<string?>(c.CanvasDisplays),
+                CanvasMainhand = c.CanvasMainhand.Length == 0 ? null : c.CanvasMainhand,
+                CanvasSplitSide = c.CanvasEnabled || c.CanvasDisplays.Count > 0 ? c.CanvasSplitSide : null,
+                CanvasAutoSpan = c.CanvasAutoSpan ? true : (bool?)null,
+                CanvasSpanDelaySeconds = c.CanvasEnabled || c.CanvasDisplays.Count > 0 ? c.CanvasSpanDelaySeconds : (int?)null,
+                NoticeShownVersion = c.NoticeShownVersion == 0 ? (int?)null : c.NoticeShownVersion,
             };
             string? dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
@@ -179,6 +198,15 @@ namespace Crucible.Tray
             // Only ever shown and compared, but a hand-edited file may hold anything: what is not a version is none.
             NudgedVersion = UpdateNudge.IsVersion(s.UpdateNudged) ? s.UpdateNudged! : "",
             FailedUpdateVersion = UpdateNudge.IsVersion(s.FailedUpdate) ? s.FailedUpdate! : "",
+            // Canvas (spec 2026-10-15 section 6.7): a hand-edited file is held to the shapes; never null, since CanvasChoice() reads them.
+            CanvasEnabled = s.CanvasEnabled ?? false,
+            CanvasMode = string.Equals(s.CanvasMode, "split", StringComparison.OrdinalIgnoreCase) ? "SPLIT" : "DUAL",
+            CanvasDisplays = (s.CanvasDisplays ?? new List<string?>()).Where(d => !string.IsNullOrEmpty(d) && d!.Length <= 512).Select(d => d!).ToList(),
+            CanvasMainhand = s.CanvasMainhand != null && s.CanvasMainhand.Length <= 512 ? s.CanvasMainhand : "",
+            CanvasSplitSide = s.CanvasSplitSide == "right" ? "right" : "left",
+            CanvasAutoSpan = s.CanvasAutoSpan ?? false,
+            CanvasSpanDelaySeconds = Math.Max(0, Math.Min(60, s.CanvasSpanDelaySeconds ?? 10)),
+            NoticeShownVersion = Math.Max(0, s.NoticeShownVersion ?? 0),
         };
 
         private static string? Open(string? stored, ISecretProtector protector)

@@ -50,6 +50,9 @@ namespace Crucible.Tray
 
         /// <summary>Why the last request failed, safe to log: a status or an exception's type, never its text.</summary>
         public string LastError { get; private set; } = "";
+        /// <summary>Whether the last manifest request (the addon's or the canvas addon's) got an HTTP answer at all - any status.
+        /// False after a dropped connection or a timeout.</summary>
+        public bool ManifestAnswered { get; private set; }
 
         public ServerClient(TrayConfig config, HttpMessageHandler handler)
         {
@@ -159,9 +162,18 @@ namespace Crucible.Tray
         /// game folder, so a manifest that <see cref="AddonManifest.Reject"/> will not have is Invalid here - it
         /// never reaches the caller at all.
         /// </summary>
-        public async Task<(FetchResult result, AddonManifest? manifest, string? etag)> FetchAddonAsync(string? etag)
+        public Task<(FetchResult result, AddonManifest? manifest, string? etag)> FetchAddonAsync(string? etag) =>
+            FetchManifestAsync("/api/v1/addon", etag);
+
+        /// <summary>The Crucible Canvas addon's manifest (spec 2026-10-15 §7.2): the same shape, checks and etag rule as the AH addon's.</summary>
+        public Task<(FetchResult result, AddonManifest? manifest, string? etag)> FetchCanvasAddonAsync(string? etag) =>
+            FetchManifestAsync("/api/v1/addons/CrucibleCanvas", etag);
+
+        private async Task<(FetchResult result, AddonManifest? manifest, string? etag)> FetchManifestAsync(string path, string? etag)
         {
-            using (var request = Request(HttpMethod.Get, "/api/v1/addon"))
+            string which = path.EndsWith("/addon", StringComparison.Ordinal) ? "the addon" : "the canvas addon";
+            ManifestAnswered = false;
+            using (var request = Request(HttpMethod.Get, path))
             {
                 if (!string.IsNullOrEmpty(etag)) request.Headers.TryAddWithoutValidation("If-None-Match", etag);
                 try
@@ -169,7 +181,8 @@ namespace Crucible.Tray
                     using (HttpResponseMessage response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false))
                     {
                         int status = (int)response.StatusCode;
-                        LastError = status == 200 || status == 304 ? "" : "the addon answered " + status;
+                        ManifestAnswered = true;
+                        LastError = status == 200 || status == 304 ? "" : which + " answered " + status;
                         if (status == 304) return (FetchResult.NotModified, null, etag);
                         if (IsRefusal(status)) return (FetchResult.Refused, null, null);
                         if (status != 200) return (FetchResult.Failed, null, null);
@@ -179,7 +192,7 @@ namespace Crucible.Tray
                         string? why = AddonManifest.Reject(manifest);
                         if (why != null)
                         {
-                            LastError = "the addon on offer was refused: " + why;
+                            LastError = which + " on offer was refused: " + why;
                             return (FetchResult.Invalid, null, null);
                         }
                         string? tag = response.Headers.TryGetValues("ETag", out IEnumerable<string>? tags) ? tags.FirstOrDefault() : null;
@@ -188,7 +201,7 @@ namespace Crucible.Tray
                 }
                 catch (Exception e) when (e is HttpRequestException || e is TaskCanceledException || e is IOException)
                 {
-                    LastError = "the addon failed: " + e.GetType().Name;
+                    LastError = which + " failed: " + e.GetType().Name;
                     return (FetchResult.Failed, null, null);
                 }
             }

@@ -24,12 +24,19 @@ namespace Crucible.Tray
             return m.Success && int.TryParse(m.Groups[1].Value, out int v) ? v : 0;
         }
 
+        /// <summary>The version of the notice whose change is the opt-in Crucible Canvas paragraph (spec 2026-10-15 §8).</summary>
+        public const int CanvasVersion = 7;
+
         /// <summary>
-        /// Whether "I understand" stands for the notice this build carries: only when they accepted this version or a
-        /// later one. An older acceptance is not carried over to words they have not read (M124).
+        /// Whether "I understand" stands for the notice this build carries: when they accepted this version or a later one
+        /// (M124) - with one carry-over the owner ruled on 2026-10-16: v6 counts for v7, because v7 reads and sends nothing
+        /// new about anyone; it adds an opt-in feature, which is shown once (<see cref="NeedsShowing"/>), not re-accepted.
         /// </summary>
         public static bool IsAccepted(int acceptedVersion, int currentVersion) =>
-            currentVersion > 0 && acceptedVersion >= currentVersion;
+            currentVersion > 0 && (acceptedVersion >= currentVersion || (currentVersion == CanvasVersion && acceptedVersion == CanvasVersion - 1));
+
+        /// <summary>The Close-only showing of a notice they accepted by carry-over: once per version, recorded as noticeShownVersion.</summary>
+        public static bool NeedsShowing(int shownVersion, int currentVersion) => currentVersion > 0 && shownVersion < currentVersion;
     }
 
     /// <summary>

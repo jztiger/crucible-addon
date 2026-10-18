@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -23,8 +24,6 @@ namespace Crucible.Tray
         /// <summary>The addon's folder before the rename. Remove at 1.0.0.</summary>
         public const string OldFolderName = "Tallybook";
 
-        /// <summary>The player's own prices live here; an update must never throw them away.</summary>
-        private const string DataFile = "Data.lua";
         private static readonly Regex VersionLine = new Regex(@"^## Version:\s*(\S+)\s*$", RegexOptions.Multiline | RegexOptions.CultureInvariant);
         // Two lines every published Tallybook.toc carried, 0.1.0 to 0.18.0, and both are needed: the saved variable
         // alone could be anybody's addon of the same name; the words of the Notes line are ours.
@@ -32,11 +31,14 @@ namespace Crucible.Tray
         private static readonly Regex OldNotes = new Regex(@"^## Notes:\s*Auction house price notebook\.", RegexOptions.Multiline | RegexOptions.CultureInvariant);
 
         /// <summary>What is installed at <paramref name="addonFolder"/>, or null when there is no addon there.</summary>
-        public static string? InstalledVersion(string addonFolder)
+        public static string? InstalledVersion(string addonFolder) => InstalledVersion(addonFolder, AddonSpec.Crucible);
+
+        /// <summary>What version of <paramref name="spec"/>'s addon is at <paramref name="addonFolder"/>, read from its own .toc; null when none.</summary>
+        public static string? InstalledVersion(string addonFolder, AddonSpec spec)
         {
             try
             {
-                string toc = Path.Combine(addonFolder, GameFolders.TocName);
+                string toc = Path.Combine(addonFolder, spec.TocName);
                 if (!File.Exists(toc)) return null;
                 Match m = VersionLine.Match(File.ReadAllText(toc, Encoding.UTF8));
                 return m.Success ? m.Groups[1].Value : null;
@@ -51,10 +53,20 @@ namespace Crucible.Tray
         /// Installs <paramref name="manifest"/> at <paramref name="addonFolder"/>, whole or not at all. Throws with
         /// a plain reason when the manifest is refused or the swap cannot be made. Returns a line for the log.
         /// </summary>
-        public static string Install(string addonFolder, AddonManifest manifest)
+        public static string Install(string addonFolder, AddonManifest manifest) => Install(addonFolder, manifest, AddonSpec.Crucible);
+
+        /// <summary>
+        /// Installs <paramref name="manifest"/> as <paramref name="spec"/>'s addon at <paramref name="addonFolder"/>, whole
+        /// or not at all, carrying the spec's generated files across an update (the installed copies win over the
+        /// manifest's placeholders). Only the Crucible spec ever looks for, or retires, the old Tallybook folder.
+        /// </summary>
+        public static string Install(string addonFolder, AddonManifest manifest, AddonSpec spec)
         {
             string? why = AddonManifest.Reject(manifest);
             if (why != null) throw new InvalidOperationException("the addon was refused: " + why);
+            // The other addon's manifest at this spec's folder would install the wrong addon under our name.
+            if (!manifest.Files.Any(f => string.Equals(f.Name, spec.TocName, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("the addon on offer is not " + spec.Name);
 
             string parent = Path.GetDirectoryName(Path.GetFullPath(addonFolder))
                 ?? throw new InvalidOperationException("the addon folder has no parent");
@@ -63,7 +75,7 @@ namespace Crucible.Tray
             string staged = Path.Combine(parent, name + ".new-" + stamp);
             string aside = Path.Combine(parent, name + ".old-" + stamp);
             bool had = Directory.Exists(addonFolder);
-            string? old = OldFolderBeside(addonFolder);
+            string? old = spec == AddonSpec.Crucible ? OldFolderBeside(addonFolder) : null;
 
             try
             {
@@ -83,12 +95,16 @@ namespace Crucible.Tray
                     if (AddonManifest.Hash(File.ReadAllBytes(Path.Combine(staged, f.Name))) != f.Sha256.ToLowerInvariant())
                         throw new IOException("\"" + f.Name + "\" did not survive being written");
                 }
-                // The player's own prices come across an update - or, the first time, from our old Tallybook folder;
-                // only a fresh install with neither keeps the manifest's empty one.
-                string installedData = Path.Combine(addonFolder, DataFile);
-                string? oldData = old == null ? null : Path.Combine(old, DataFile);
-                if (had && File.Exists(installedData)) File.Copy(installedData, Path.Combine(staged, DataFile), true);
-                else if (oldData != null && File.Exists(oldData)) File.Copy(oldData, Path.Combine(staged, DataFile), true);
+                // The spec's generated files (the AH addon's prices; Canvas's topology and recovery) come across an
+                // update - or, for the AH addon the first time, from our old Tallybook folder; only a fresh install with
+                // neither keeps the manifest's placeholder.
+                foreach (string carried in spec.CarriedFiles)
+                {
+                    string installed = Path.Combine(addonFolder, carried);
+                    string? oldOne = old == null ? null : Path.Combine(old, carried);
+                    if (had && File.Exists(installed)) File.Copy(installed, Path.Combine(staged, carried), true);
+                    else if (oldOne != null && File.Exists(oldOne)) File.Copy(oldOne, Path.Combine(staged, carried), true);
+                }
             }
             catch (Exception)
             {

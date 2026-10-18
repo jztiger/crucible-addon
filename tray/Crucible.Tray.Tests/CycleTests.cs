@@ -42,6 +42,25 @@ namespace Crucible.Tray.Tests
         public string[]? Products = { "_classic_beta_" };
         public string ETag = "\"v1\"";
         public int IngestStatus = 200;
+        /// <summary>The Canvas addon on offer at /api/v1/addons/CrucibleCanvas (spec 2026-10-15 §7.2).</summary>
+        public string CanvasVersion = "0.1.0";
+        public int CanvasStatus = 200;
+        public int CanvasRequests;
+        /// <summary>The canvas manifest request gets no HTTP answer at all (a dropped connection).</summary>
+        public bool CanvasUnreachable;
+        public string CanvasSaved => CanvasSavedOf("ACC");
+        public string CanvasSavedOf(string account) => Path.Combine(Wow, Product, "WTF", "Account", account, "SavedVariables", "CrucibleCanvas.lua");
+        /// <param name="writtenUtc">The file's write time, when a test needs one account's file newer than another's.</param>
+        public void SaveCanvas(string text, string account = "ACC", DateTime? writtenUtc = null)
+        {
+            string file = CanvasSavedOf(account);
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            File.WriteAllText(file, text);
+            if (writtenUtc != null) File.SetLastWriteTimeUtc(file, writtenUtc.Value);
+        }
+        /// <summary>A complete saved Canvas file: one chunk and its sentinel.</summary>
+        public static string CanvasDb(int revision, string base64) =>
+            "CrucibleCanvasDB = {\n[\"chunks\"] = {\n\"cc1:" + revision + ":1/1:" + base64 + "\", -- [1]\n\"cc1end:" + revision + ":1\", -- [2]\n},\n}\n";
         public Cycle Cycle;
 
         /// <summary>A manifest in the shape the server sends: a .toc with that version, and one Lua file.</summary>
@@ -53,6 +72,16 @@ namespace Crucible.Tray.Tests
             string One(string n, string c) => "{\"name\":\"" + n + "\",\"sha256\":\"" + AddonManifest.Hash(c) + "\",\"content\":" + Quote(c) + "}";
             string list = products == null ? "" : ",\"products\":[" + string.Join(",", products.Select(Quote)) + "]";
             return "{\"version\":\"" + version + "\",\"files\":[" + One("Crucible.toc", toc) + "," + One("Logic.lua", logic) + "," + One("Data.lua", empty) + "]" + list + "}";
+        }
+
+        /// <summary>The Canvas manifest: its .toc with that version, its code, and the two placeholders the tray later rewrites.</summary>
+        public static string CanvasJson(string version)
+        {
+            string toc = "## Interface: 16001\n## Title: Crucible Canvas\n## Version: " + version + "\n\nTopology.lua\nRecovery.lua\nInit.lua\n";
+            string init = "local _, ns = ...\n-- " + version + "\n";
+            string One(string n, string c) => "{\"name\":\"" + n + "\",\"sha256\":\"" + AddonManifest.Hash(c) + "\",\"content\":" + Quote(c) + "}";
+            return "{\"version\":\"" + version + "\",\"files\":[" + One("CrucibleCanvas.toc", toc) + "," + One("Init.lua", init) + ","
+                + One("Topology.lua", "CrucibleCanvasTopology = {}\n") + "," + One("Recovery.lua", "CrucibleCanvasRecovery = {}\n") + "]}";
         }
 
         private static string Quote(string s) => "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n") + "\"";
@@ -92,6 +121,17 @@ namespace Crucible.Tray.Tests
                     if (r.Headers.TryGetValue("If-None-Match", out string? a) && a == AddonETag) return FakeServer.Status(304, "");
                     var m = FakeServer.Status(200, AddonJson(AddonVersion, Products));
                     m.Headers.TryAddWithoutValidation("ETag", AddonETag);
+                    return m;
+                }
+                if (r.Url.EndsWith("/api/v1/addons/CrucibleCanvas", StringComparison.Ordinal))
+                {
+                    CanvasRequests++;
+                    if (CanvasUnreachable) throw new HttpRequestException("no answer");
+                    if (CanvasStatus != 200) return FakeServer.Status(CanvasStatus, "{}");
+                    string canvasTag = "\"canvas-" + CanvasVersion + "\"";
+                    if (r.Headers.TryGetValue("If-None-Match", out string? c) && c == canvasTag) return FakeServer.Status(304, "");
+                    var m = FakeServer.Status(200, CanvasJson(CanvasVersion));
+                    m.Headers.TryAddWithoutValidation("ETag", canvasTag);
                     return m;
                 }
                 if (r.Headers.TryGetValue("If-None-Match", out string? tag) && tag == ETag) return FakeServer.Status(304, "");
@@ -899,6 +939,301 @@ namespace Crucible.Tray.Tests
 
             Assert.Empty(w.ItemCachePosts());
             Assert.Contains("could not read the game's item cache", File.ReadAllText(w.LogFile));
+        }
+
+    }
+
+    /// <summary>Spec 2026-10-15 §6.6, §7.2: the Canvas addon, installed only while switched on, and its Recovery.lua.</summary>
+    public class CanvasCycleTests
+    {
+        [Fact]
+        public async Task TheCanvasAddonIsInstalledOnlyWhenTheSwitchIsOn_AndThenKeptCurrent()
+        {
+            using var w = new World();
+            await w.Cycle.RunAsync(true);
+            Assert.Equal(0, w.CanvasRequests);
+            Assert.False(Directory.Exists(Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas")));
+            w.Config.CanvasEnabled = true;
+            CycleReport r = await w.Cycle.RunAsync(true);
+            Assert.Equal("0.1.0", r.CanvasAddonInstalled);
+            Assert.True(File.Exists(Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas", "CrucibleCanvas.toc")));
+            Assert.Equal("CrucibleCanvasTopology = {}\n", File.ReadAllText(Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas", "Topology.lua")));
+            w.CanvasVersion = "0.2.0"; w.Now = w.Now.AddHours(7);
+            r = await w.Cycle.RunAsync(false);
+            Assert.Equal("0.2.0", r.CanvasAddonInstalled);
+        }
+
+        [Fact]
+        public async Task SwitchingCanvasOff_LeavesTheFolder_AndStopsUpdating()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            w.Config.CanvasEnabled = false; w.CanvasVersion = "0.2.0"; w.Now = w.Now.AddHours(7);
+            await w.Cycle.RunAsync(false);
+            Assert.Equal("0.1.0", AddonInstaller.InstalledVersion(Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas"), AddonSpec.Canvas));
+        }
+
+        [Fact]
+        public async Task RecoveryLua_IsWrittenFromAStableSavedFile_OnlyWhenTheRevisionRose()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            string recovery = Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas", "Recovery.lua");
+            w.SaveCanvas("CrucibleCanvasDB = {\n[\"chunks\"] = {\n\"cc1:3:1/1:QUJD\", -- [1]\n\"cc1end:3:1\", -- [2]\n},\n}\n");
+            CycleReport r = await w.Cycle.RunAsync(false);
+            Assert.Equal(0, r.RecoveryWritten);                 // not stable yet
+            w.Now = w.Now.AddSeconds(4); r = await w.Cycle.RunAsync(false);
+            Assert.Equal(1, r.RecoveryWritten);
+            Assert.Equal(RecoveryFile.Render(3, "QUJD"), File.ReadAllText(recovery));
+            w.Now = w.Now.AddSeconds(4); r = await w.Cycle.RunAsync(false);
+            Assert.Equal(0, r.RecoveryWritten);                 // same revision: nothing rewritten
+            w.SaveCanvas("CrucibleCanvasDB = {\n[\"chunks\"] = {\n\"cc1:2:1/1:QUJE\", -- [1]\n\"cc1end:2:1\", -- [2]\n},\n}\n");
+            w.Now = w.Now.AddSeconds(4); r = await w.Cycle.RunAsync(false);
+            Assert.Equal(0, r.RecoveryWritten);                 // an OLDER revision never replaces a newer file
+            Assert.Contains("revision = 3", File.ReadAllText(recovery));
+            w.Now = w.Now.AddSeconds(4); r = await w.Cycle.RunAsync(false);
+            Assert.Equal(0, r.RecoveryWritten);                 // ...also once that older file is stable (the guard, not the stability check)
+            Assert.Contains("revision = 3", File.ReadAllText(recovery));
+        }
+
+        [Fact]
+        public async Task APartialSavedFile_IsRefusedWhole_AndTriedAgain()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            w.SaveCanvas("CrucibleCanvasDB = {\n[\"chunks\"] = {\n\"cc1:5:1/2:QUJD\", -- [1]\n},\n}\n");
+            CycleReport r = await w.RunUntilStable();       // brief slip: a file is stable only on its second look
+            Assert.Equal(0, r.RecoveryWritten);
+            Assert.Contains("no sentinel", File.ReadAllText(w.LogFile));
+            w.SaveCanvas("CrucibleCanvasDB = {\n[\"chunks\"] = {\n\"cc1:5:1/1:QUJD\", -- [1]\n\"cc1end:5:1\", -- [2]\n},\n}\n");
+            r = await w.RunUntilStable();
+            Assert.Equal(1, r.RecoveryWritten);
+        }
+
+        [Fact]
+        public async Task WithNoSecondDisplay_TheAddonStillInstalls_AndNothingElseChanges()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true;   // the cycle does not span; the controller does, in the shell
+            CycleReport r = await w.Cycle.RunAsync(true);
+            Assert.Equal("0.1.0", r.CanvasAddonInstalled);
+            Assert.Equal(TrayState.Ok, r.State);
+        }
+
+        [Fact]
+        public async Task A_server_with_no_canvas_addon_does_not_stop_the_uploads()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true; w.CanvasStatus = 404;
+            w.Save("CrucibleDB = {}\n");
+            CycleReport r = await w.RunUntilStable();
+            Assert.Equal(1, r.Uploaded);
+            Assert.Equal(TrayState.Ok, r.State);
+            Assert.Null(r.CanvasAddonInstalled);
+            Assert.Contains("no canvas addon to install this time: the canvas addon answered 404", File.ReadAllText(w.LogFile));
+        }
+
+        [Fact]
+        public async Task A_saved_file_over_the_cap_is_skipped()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            Directory.CreateDirectory(Path.GetDirectoryName(w.CanvasSaved)!);
+            using (FileStream big = File.Create(w.CanvasSaved)) { big.SetLength(RecoveryFile.MaxSavedBytes + 1); }
+            CycleReport r = await w.RunUntilStable();
+            Assert.Equal(0, r.RecoveryWritten);
+            Assert.Equal("CrucibleCanvasRecovery = {}\n", File.ReadAllText(Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas", "Recovery.lua")));
+        }
+
+        [Fact]
+        public async Task A_Recovery_lua_already_on_disk_seeds_the_revision_after_a_restart()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            string recovery = Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas", "Recovery.lua");
+            File.WriteAllText(recovery, RecoveryFile.Render(9, "QUJD"));
+            w.Cycle = w.NewCycle();
+            w.SaveCanvas("CrucibleCanvasDB = {\n[\"chunks\"] = {\n\"cc1:4:1/1:QUJE\", -- [1]\n\"cc1end:4:1\", -- [2]\n},\n}\n");
+            CycleReport r = await w.RunUntilStable();
+            Assert.Equal(0, r.RecoveryWritten);
+            Assert.Contains("revision = 9", File.ReadAllText(recovery));
+            Assert.DoesNotContain(w.Log(), l => l.Contains(w.Dir.Path)); // a path is never logged
+        }
+
+        [Fact]
+        public async Task A_damaged_Recovery_lua_does_not_stop_the_pass()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            string recovery = Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas", "Recovery.lua");
+            File.WriteAllText(recovery, "CrucibleCanvasRecovery = { schema = 1, revision = \u0663, state = \"\" }\n"); // an Arabic-Indic digit
+            w.Cycle = w.NewCycle();
+            w.SaveCanvas("CrucibleCanvasDB = {\n[\"chunks\"] = {\n\"cc1:1:1/1:QUJD\", -- [1]\n\"cc1end:1:1\", -- [2]\n},\n}\n");
+            CycleReport r = await w.RunUntilStable();
+            Assert.Equal(1, r.RecoveryWritten);
+            Assert.Equal(TrayState.Ok, r.State);
+        }
+
+        [Fact]
+        public async Task A_partial_file_that_stays_partial_is_logged_once_not_every_pass()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            w.SaveCanvas("CrucibleCanvasDB = {\n[\"chunks\"] = {\n\"cc1:5:1/2:QUJD\", -- [1]\n},\n}\n");
+            await w.RunUntilStable();
+            for (int i = 0; i < 3; i++) { w.Now = w.Now.AddSeconds(2); await w.Cycle.RunAsync(false); }
+            Assert.Single(w.Log(), l => l.Contains("canvas saved file not usable yet: no sentinel"));
+        }
+
+        [Fact]
+        public async Task A_canvas_addon_the_server_does_not_have_is_asked_for_once_then_on_the_cadence_or_when_forced()
+        {
+            // Ruling P2-R4: "at once when missing" is the first check only; a 404 waits the cadence like any other answer.
+            using var w = new World(); w.Config.CanvasEnabled = true; w.CanvasStatus = 404;
+            await w.Cycle.RunAsync(false);
+            Assert.Equal(1, w.CanvasRequests);
+            for (int i = 0; i < 10; i++) { w.Now = w.Now.AddSeconds(2); await w.Cycle.RunAsync(false); }
+            Assert.Equal(1, w.CanvasRequests);
+            await w.Cycle.RunAsync(true);                        // "Upload now"
+            Assert.Equal(2, w.CanvasRequests);
+            w.CanvasStatus = 200; w.Now = w.Now.Add(Cycle.AddonEvery);
+            CycleReport r = await w.Cycle.RunAsync(false);       // and the cadence
+            Assert.Equal(3, w.CanvasRequests);
+            Assert.Equal("0.1.0", r.CanvasAddonInstalled);
+        }
+
+        [Fact]
+        public async Task The_account_written_last_decides_Recovery_lua_not_the_higher_revision_of_an_older_one()
+        {
+            // Ruling P2-R5 (spec §6.6, R27): the newest account's document wins.
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            string recovery = Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas", "Recovery.lua");
+            DateTime t = new DateTime(2026, 10, 16, 12, 0, 0, DateTimeKind.Utc);
+            w.SaveCanvas(World.CanvasDb(9, "QUJD"), "ACC1", t);
+            w.SaveCanvas(World.CanvasDb(4, "QUJE"), "ACC2", t.AddMinutes(1));
+            CycleReport r = await w.RunUntilStable();
+            Assert.Equal(1, r.RecoveryWritten);
+            Assert.Equal(RecoveryFile.Render(4, "QUJE"), File.ReadAllText(recovery));
+            w.SaveCanvas(World.CanvasDb(10, "QUJG"), "ACC1", t.AddMinutes(2));
+            r = await w.RunUntilStable();
+            Assert.Equal(1, r.RecoveryWritten);
+            Assert.Equal(RecoveryFile.Render(10, "QUJG"), File.ReadAllText(recovery));
+        }
+
+        [Fact]
+        public async Task Two_accounts_written_in_the_same_second_give_the_higher_revision()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            DateTime t = new DateTime(2026, 10, 16, 12, 0, 0, DateTimeKind.Utc);
+            w.SaveCanvas(World.CanvasDb(7, "QUJD"), "ACC1", t.AddMilliseconds(100));
+            w.SaveCanvas(World.CanvasDb(3, "QUJE"), "ACC2", t.AddMilliseconds(900));
+            await w.RunUntilStable();
+            Assert.Contains("revision = 7", File.ReadAllText(Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas", "Recovery.lua")));
+        }
+
+        [Fact]
+        public async Task A_newest_file_that_is_partial_is_not_passed_over_for_an_older_account()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            DateTime t = new DateTime(2026, 10, 16, 12, 0, 0, DateTimeKind.Utc);
+            w.SaveCanvas(World.CanvasDb(9, "QUJD"), "ACC1", t);
+            w.SaveCanvas("CrucibleCanvasDB = {\n[\"chunks\"] = {\n\"cc1:5:1/2:QUJD\", -- [1]\n},\n}\n", "ACC2", t.AddMinutes(1));
+            CycleReport r = await w.RunUntilStable();
+            Assert.Equal(0, r.RecoveryWritten);
+            Assert.Equal("CrucibleCanvasRecovery = {}\n", File.ReadAllText(Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas", "Recovery.lua")));
+        }
+        // ---- final fix wave (rulings P2-R8, P2-R12, P2-R4 refinement) ------------------------------------------------
+
+        private static string RecoveryOf(World w) => Path.Combine(w.Wow, w.Product, "Interface", "AddOns", "CrucibleCanvas", "Recovery.lua");
+
+        [Fact]
+        public async Task Recovery_lua_is_written_while_the_server_is_down_and_an_upload_is_waiting()
+        {
+            // Ruling P2-R8: a down server at logout must not lose that session's layout.
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);                         // the canvas addon is installed
+            w.IngestStatus = 503;
+            w.Save("CrucibleDB = { one = 1 }\n");                 // an upload is waiting, so every pass stops at the server
+            w.SaveCanvas(World.CanvasDb(3, "QUJD"));
+            int written = 0;
+            for (int i = 0; i < 10; i++)
+            {
+                w.Now = w.Now.AddSeconds(2);
+                CycleReport r = await w.Cycle.RunAsync(false);
+                written += r.RecoveryWritten;
+                if (i >= 2) Assert.Equal(TrayState.Retrying, r.State);
+            }
+            Assert.Equal(1, written);
+            Assert.Equal(RecoveryFile.Render(3, "QUJD"), File.ReadAllText(RecoveryOf(w)));
+        }
+
+        [Fact]
+        public async Task Recovery_lua_is_written_while_paused()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            w.Config.Paused = true;
+            w.SaveCanvas(World.CanvasDb(5, "QUJD"));
+            CycleReport r = await w.RunUntilStable();
+            Assert.Equal(TrayState.Paused, r.State);
+            Assert.Equal(1, r.RecoveryWritten);
+            Assert.Equal(RecoveryFile.Render(5, "QUJD"), File.ReadAllText(RecoveryOf(w)));
+            Assert.Equal(1, w.CanvasRequests);                    // paused: nothing else was asked of the server
+        }
+
+        [Fact]
+        public async Task A_missing_game_folder_still_says_so_and_paused_still_wins()
+        {
+            using var w = new World(); w.Config.CanvasEnabled = true; w.Config.WowFolder = Path.Combine(w.Dir.Path, "nowhere");
+            Assert.Equal(TrayState.NeedsAttention, (await w.Cycle.RunAsync(false)).State);
+            w.Config.Paused = true;
+            Assert.Equal(TrayState.Paused, (await w.Cycle.RunAsync(false)).State);
+        }
+
+        [Fact]
+        public async Task The_canvas_addon_follows_the_canvas_switch_even_with_AH_addon_updates_off()
+        {
+            // Ruling P2-R12: "Keep the Crucible addon up to date" is the AH addon's switch, not Canvas's.
+            using var w = new World(); w.Config.CanvasEnabled = true; w.Config.KeepAddonUpToDate = false;
+            CycleReport r = await w.Cycle.RunAsync(true);
+            Assert.Equal("0.1.0", r.CanvasAddonInstalled);
+        }
+
+        [Fact]
+        public async Task A_canvas_fetch_that_got_no_answer_is_tried_again_after_a_minute_and_logged_once()
+        {
+            // Ruling P2-R16: no answer is retried after one minute, not every pass; an answer keeps the full cadence.
+            using var w = new World(); w.Config.CanvasEnabled = true; w.CanvasUnreachable = true;
+            DateTime start = w.Now;
+            await w.Cycle.RunAsync(false);
+            Assert.Equal(1, w.CanvasRequests);
+            for (int i = 0; i < 29; i++) { w.Now = w.Now.AddSeconds(2); await w.Cycle.RunAsync(false); }   // up to 58 s
+            w.Now = start.AddSeconds(59); await w.Cycle.RunAsync(false);
+            Assert.Equal(1, w.CanvasRequests);
+            w.Now = start.AddSeconds(61); await w.Cycle.RunAsync(false);
+            Assert.Equal(2, w.CanvasRequests);
+            Assert.Single(w.Log(), l => l.Contains("no canvas addon to install this time"));
+            w.CanvasUnreachable = false;
+            w.Now = start.AddSeconds(122); CycleReport r = await w.Cycle.RunAsync(false);
+            Assert.Equal(3, w.CanvasRequests);
+            Assert.Equal("0.1.0", r.CanvasAddonInstalled);
+            w.Now = start.AddSeconds(190); await w.Cycle.RunAsync(false);
+            Assert.Equal(3, w.CanvasRequests);                    // an answer: the full cadence again
+        }
+
+        [Fact]
+        public async Task An_outside_reinstall_of_the_canvas_addon_gets_Recovery_lua_back()
+        {
+            // The revision on disk decides every pass: no remembered revision outlives the file it was written to.
+            using var w = new World(); w.Config.CanvasEnabled = true;
+            await w.Cycle.RunAsync(true);
+            w.SaveCanvas(World.CanvasDb(3, "QUJD"));
+            Assert.Equal(1, (await w.RunUntilStable()).RecoveryWritten);
+            File.WriteAllText(RecoveryOf(w), "CrucibleCanvasRecovery = {}\n");   // the person reinstalled the addon by hand
+            w.Now = w.Now.AddSeconds(2);
+            Assert.Equal(1, (await w.Cycle.RunAsync(false)).RecoveryWritten);
+            Assert.Equal(RecoveryFile.Render(3, "QUJD"), File.ReadAllText(RecoveryOf(w)));
         }
     }
 }
