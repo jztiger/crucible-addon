@@ -3,7 +3,7 @@
 ## IconTexture: Interface\AddOns\Crucible\Icon.tga
 ## Notes: Auction house price notebook with posting help: it suggests a price and lists your undercut auctions, and you click every post and every cancel yourself. Never bids or buys. Runs one quick scan when you open the auction house (untick auto-scan to stop it).
 ## Author: jztiger
-## Version: 0.99.7
+## Version: 0.99.8
 ## SavedVariables: CrucibleDB
 
 Logic.lua
@@ -15,6 +15,7 @@ Strip.lua
 Craft.lua
 Mail.lua
 Quest.lua
+Sheet.lua
 Ledger.lua
 UI.lua
 List.lua

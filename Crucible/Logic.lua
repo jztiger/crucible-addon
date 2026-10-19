@@ -9,7 +9,7 @@ ns = ns or {}
 local L = {}
 ns.Logic = L
 
-L.VERSION = "0.99.7"
+L.VERSION = "0.99.8"
 -- Two independent version counters, mirroring the server (src/shared/scan-schema.ts SCAN_SCHEMA_VERSION,
 -- src/shared/ref-doc.ts REF_SCHEMA_VERSION): the scan document's shape (replicate, browse) has not changed
 -- since M1, so buildDoc still tags SCAN_SCHEMA; the reference document gained items, suffixes and named
@@ -1897,6 +1897,222 @@ function L.questTag(b64) return "q1:" .. tostring(b64) end
 function L.questOf(text)
     if type(text) ~= "string" then return nil end
     return string.match(text, "^q1:([A-Za-z0-9+/=]+)$")
+end
+
+---------------------------------------------------------------------------------------------------
+-- The character snapshot (spec 2026-10-17-dps-simulator-design.md, sections 5 and 11): who the logged-in character
+-- is, what it wears and carries, what it has learned, its pet and professions, and the stats the game reports for
+-- it, as one "c1:<base64 JSON>" string beside the reference and quest strings. Pure bookkeeping here; the capture
+-- does the reading and Export the writing. Mirrors src/shared/char-doc.ts, whose ceilings these are (a test holds
+-- the two together) and which this builder is never looser than: what it builds always parses there with nothing
+-- dropped. A bad ROW is dropped, as there. Where the server would refuse the WHOLE document (a stat the game did
+-- not report, an identity field out of range) there is no document at all, so the caller keeps the last complete
+-- one: the engine must never simulate from half a sheet.
+---------------------------------------------------------------------------------------------------
+
+-- The notice that names the snapshot is the quest library's, version 6 (spec section 11: the collection gate is the
+-- scope notice, not the newest one). The tagged string is capped where the server stops decoding it
+-- (MAX_CHAR_BASE64_CHARS there; counting the tag as well only makes this cap the stricter).
+L.CHAR_NOTICE_MIN = 6
+L.CHAR_MAX_BYTES = 262144
+-- The row ceilings, under the names char-doc.ts gives them. Its other bounds (a level, a bag, a bag slot and a talent
+-- rank all run to 255) are written into the row makers below.
+L.MAX_GEAR_SLOT = 19
+L.MAX_BAG_ITEMS = 200
+L.MAX_SPELLS = 1000
+L.MAX_TALENT_NODES = 300
+L.MAX_PROFESSIONS = 12
+L.MAX_LOADOUT_CHARS = 1024
+
+-- Collecting needs two things from the member's own Data.lua (written by the server from what their tray said): the
+-- notice they accepted is version 6 or later, and the "Use the simulator" switch is not off. The simulator is ON by
+-- default (spec section 11), so a file with no switch written counts as on. A file with no notice at all (an older
+-- server, the local bake, no tray) collects nothing, the same rule L.recordsQuests keeps.
+function L.collectsChar(baked)
+    if type(baked) ~= "table" or baked.useSimulator == false then return false end
+    return isCount(baked.acceptedNotice, L.CHAR_NOTICE_MIN)
+end
+
+-- "|cnIQ3:|Hitem:6469::::::::30:1485::1:::::::|h[Venomstrike]|h|r" -> "item:6469::::::::30:1485::1:::::::". A string
+-- that already is an item string passes the same checks, so a cleaned one cleans to itself. A crafted item's link
+-- carries its crafter's GUID ("Player-<server>-<hex>"): another player's identity, which is never sent. It is cut
+-- out here, and what remains must be digits, colons and minus signs only - the server's own pattern, its backstop:
+-- a GUID that cannot be cut clean, or anything else with a letter in it, is refused, never repaired. At most 250
+-- characters, counted after the cut (the probe's longest was 59). -> the item string, or nil
+function L.itemString(link)
+    if type(link) ~= "string" then return nil end
+    local raw = string.match(link, "|H(item:[^|]*)|h")
+    if not raw and string.sub(link, 1, 5) == "item:" then raw = link end
+    if not raw then return nil end
+    local item = string.gsub(raw, "Player%-%d+%-%x+", "") -- gsub's second return, the count, is not wanted
+    if #item > 250 or not string.match(item, "^item:[%-%d:]+$") then return nil end
+    return item
+end
+
+-- A table of exactly n cells: the contract's tuples refuse a short row and an overlong one alike.
+local function cells(t, n)
+    return type(t) == "table" and t[n] ~= nil and t[n + 1] == nil
+end
+
+-- A whole number in min..255, the contract's range for a level, a bag, a bag slot and a talent rank.
+local function isSmall(v, min)
+    return isCount(v, min) and v <= 255
+end
+
+-- Rows of one section. `make(row)` returns a FRESH row (nothing of the snapshot's own tables goes into the document)
+-- or nil to drop it. At most `ceiling` rows are kept, the first ones. With `keyOf`, a second row for the same key
+-- (one gear slot, one bag cell) replaces the first where it stands: one row per slot, the later one winning, which
+-- is also how the engine reads a duplicate.
+local function keepRows(rows, ceiling, make, keyOf)
+    local out, place = {}, {}
+    if type(rows) ~= "table" then return out end
+    for i = 1, #rows do
+        local row = make(rows[i])
+        if row then
+            local key = keyOf and keyOf(row)
+            if key and place[key] then
+                out[place[key]] = row
+            elseif #out < ceiling then
+                out[#out + 1] = row
+                if key then place[key] = #out end
+            elseif not keyOf then
+                break
+            end
+        end
+    end
+    return out
+end
+
+-- The row makers: the contract's tuples, cell by cell. [slot 1..19, item], [bag 0..255, slot 1..255, item],
+-- [spellId, lowRank 0 or 1], [nodeId, entryId, rank 1..255, spellId], [skillLine, rank, maxRank]. Every item cell goes
+-- through L.itemString, so a GUID cannot get through even from a capture that forgot to cut it.
+local function gearRow(r)
+    if not (cells(r, 2) and isCount(r[1], 1) and r[1] <= L.MAX_GEAR_SLOT) then return nil end
+    local item = L.itemString(r[2])
+    return item and { r[1], item } or nil
+end
+
+local function bagRow(r)
+    if not (cells(r, 3) and isSmall(r[1], 0) and isSmall(r[2], 1)) then return nil end
+    local item = L.itemString(r[3])
+    return item and { r[1], r[2], item } or nil
+end
+
+local function spellRow(r)
+    if not (cells(r, 2) and isCount(r[1], 1) and (r[2] == 0 or r[2] == 1)) then return nil end
+    return { r[1], r[2] }
+end
+
+local function talentRow(r)
+    if not (cells(r, 4) and isCount(r[1], 1) and isCount(r[2], 1) and isSmall(r[3], 1) and isCount(r[4], 1)) then
+        return nil
+    end
+    return { r[1], r[2], r[3], r[4] }
+end
+
+local function professionRow(r)
+    if not (cells(r, 3) and isCount(r[1], 1) and isCount(r[2], 0) and isCount(r[3], 0)) then return nil end
+    return { r[1], r[2], r[3] }
+end
+
+local function idRow(v)
+    return isCount(v, 1) and v or nil
+end
+
+local function gearKey(row) return row[1] end
+local function bagKey(row) return row[1] * 256 + row[2] end -- bag 0..255, slot 1..255: one number per cell
+
+-- Exactly n whole numbers of either sign, copied; nil for anything else.
+local function wholes(t, n)
+    if not cells(t, n) then return nil end
+    local out = {}
+    for i = 1, n do
+        if not isInt(t[i]) then return nil end
+        out[i] = t[i]
+    end
+    return out
+end
+
+local STAT_QUADS = { "str", "agi", "sta", "int", "spi" } -- UnitStat's four returns, as they come
+local STAT_TRIPLES = { "ap", "rap" } -- UnitAttackPower's base, positive and negative parts
+local STAT_WHOLES = { "crit", "rangedCrit", "spellCrit", "hit", "spellHit" } -- percentages times 100, rounded
+local STAT_WEAPONS = { "mh", "oh", "ranged" } -- damage times 100 and speed in ms; a hand may hold nothing
+
+-- -> the contract's stats object, or nil. EVERY stat but the weapons is required, and one the game did not report as
+-- a whole number is no stat: nil, and the caller keeps its last complete capture rather than write a partial one. A
+-- weapon that is absent stays out, but one that is there and cannot be written would read as "no weapon" on the
+-- page, so it refuses the document the same way.
+local function charStats(s)
+    if type(s) ~= "table" or not isCount(s.hp, 0) or not isCount(s.mana, 0) then return nil end
+    local out = { hp = s.hp, mana = s.mana }
+    for _, key in ipairs(STAT_QUADS) do
+        out[key] = wholes(s[key], 4)
+        if not out[key] then return nil end
+    end
+    for _, key in ipairs(STAT_TRIPLES) do
+        out[key] = wholes(s[key], 3)
+        if not out[key] then return nil end
+    end
+    for _, key in ipairs(STAT_WHOLES) do
+        if not isInt(s[key]) then return nil end
+        out[key] = s[key]
+    end
+    for _, key in ipairs(STAT_WEAPONS) do
+        if s[key] ~= nil then
+            out[key] = wholes(s[key], 3)
+            if not out[key] then return nil end
+        end
+    end
+    return out
+end
+
+-- -> the contract's pet, or nil. A pet the builder cannot describe is left out rather than lose the snapshot: a
+-- hunter may have none out anyway, so the page has to cope with no pet.
+local function charPet(p)
+    if type(p) ~= "table" or not isCount(p.family, 1) or not isSmall(p.level, 1) then return nil end
+    return { family = p.family, level = p.level, spells = keepRows(p.spells, L.MAX_SPELLS, idRow) }
+end
+
+-- -> the schema-1 character document, or nil when there is no honest one to make: no valid hash or time, no name, an
+-- identity field or a stat the contract would refuse. `snap` is the capture's table - name, classId, raceId, level,
+-- faction?, gear, bags, spells, talents, loadout?, pet?, professions, stats - with its rows already in the contract's
+-- tuple shapes; `charHash` is L.charHash's output; `meta` is ns.meta() (region, realm and, failing the snapshot's own,
+-- the faction). Nothing of `snap` is shared with the result and nothing outside the contract's fields is copied.
+-- gear and spells are always there (an empty list), the other sections only when they hold something.
+function L.charDoc(snap, at, charHash, meta)
+    if type(snap) ~= "table" or not isCount(at, 0) or not isUid(charHash) then return nil end
+    local name = cutName(snap.name)
+    if not (name and isCount(snap.classId, 1) and isCount(snap.raceId, 1) and isSmall(snap.level, 1)) then
+        return nil
+    end
+    local stats = charStats(snap.stats)
+    if not stats then return nil end
+    if type(meta) ~= "table" then meta = {} end
+    local doc = { schema = 1, kind = "char", at = at, char = charHash, name = name,
+        classId = snap.classId, raceId = snap.raceId, level = snap.level,
+        faction = cutName(snap.faction) or cutName(meta.faction), realm = cutName(meta.realm),
+        gear = keepRows(snap.gear, L.MAX_GEAR_SLOT, gearRow, gearKey),
+        spells = keepRows(snap.spells, L.MAX_SPELLS, spellRow),
+        stats = stats }
+    if isInt(meta.region) then doc.region = meta.region end
+    local bags = keepRows(snap.bags, L.MAX_BAG_ITEMS, bagRow, bagKey)
+    if #bags > 0 then doc.bags = bags end
+    local talents = keepRows(snap.talents, L.MAX_TALENT_NODES, talentRow)
+    if #talents > 0 then doc.talents = talents end
+    local loadout = snap.loadout
+    -- bytes, which are never fewer than the characters the contract counts; one over the ceiling is left out, not cut
+    if type(loadout) == "string" and loadout ~= "" and #loadout <= L.MAX_LOADOUT_CHARS then doc.loadout = loadout end
+    doc.pet = charPet(snap.pet)
+    local professions = keepRows(snap.professions, L.MAX_PROFESSIONS, professionRow)
+    if #professions > 0 then doc.professions = professions end
+    return doc
+end
+
+-- -> "c1:<b64>"   (its own tag, like the quest string's "q1:": the server lifts each kind out on its own)
+function L.charTag(b64) return "c1:" .. tostring(b64) end
+function L.charOf(text)
+    if type(text) ~= "string" then return nil end
+    return string.match(text, "^c1:([A-Za-z0-9+/=]+)$")
 end
 
 return L

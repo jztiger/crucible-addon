@@ -32,6 +32,13 @@ namespace Crucible.Tray
         public int Wrote { get; set; }
         /// <summary>The addon version installed this pass, or null when nothing was installed.</summary>
         public string? AddonInstalled { get; set; }
+        /// <summary>
+        /// The addon version the server offers (Help > About, owner 2026-10-18): set on every pass that read the manifest,
+        /// whether it is installed here or not and with updates on or off; null on a pass that did not (the six-hour cadence,
+        /// a 304, a server with nothing to offer) - so null means "nothing learned this pass", and the shell keeps the last
+        /// version it was told.
+        /// </summary>
+        public string? AddonOffered { get; set; }
         /// <summary>The server sent a different list of product folders; it is in the config now, to be saved.</summary>
         public bool ProductsChanged { get; set; }
         /// <summary>Spec 2026-10-12: a verified newer tray is written beside the exe and waits for a quiet moment.</summary>
@@ -354,6 +361,9 @@ namespace Crucible.Tray
                 log.Write("no addon to install this time: " + client.LastError);
                 return null;
             }
+            // Help > About: the version on offer is known now, before the install switch can end this method (a member who
+            // keeps the addon by hand still sees how far behind it is). The client has already checked it is a plain version.
+            report.AddonOffered = manifest.Version;
 
             IReadOnlyList<string> products = ForeverProducts.Choose(config.Products, manifest.Products);
             if (!ForeverProducts.Same(products, config.Products))

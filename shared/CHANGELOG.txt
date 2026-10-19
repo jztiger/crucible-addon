@@ -1,5 +1,9 @@
-Crucible changelog - newest first. Features inside the notice's scope are listed here (notice version 7).
+Crucible changelog - newest first. Features inside the notice's scope are listed here (notice version 8).
 
+0.101.0 - The simulator: your character's sheet - name, level, gear, bag items, spells, talents, pet and stats -
+         goes with your data. Switch it off on the website's Your PCs page. The notice gains a section about it
+         (version 8) and is shown once; nothing to re-accept. Help > About Crucible in the tray menu shows the
+         versions, these release notes and the notice, in place of "View notice".
 0.100.0 - Crucible Canvas: a second addon and a Displays window in the tray. Tick two screens, choose the Mainhand
          one, press Span WoW now: the game and HUD stay on the Mainhand screen and the map, bags and panels open on
          the other and come back where you left them, across /reload and a restart. Off until you turn it on in the

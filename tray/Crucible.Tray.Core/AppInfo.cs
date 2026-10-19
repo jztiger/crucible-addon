@@ -4,7 +4,7 @@ namespace Crucible.Tray
     public static class AppInfo
     {
         public const string Name = "Crucible";
-        public const string Version = "0.100.0";
+        public const string Version = "0.101.0";
         /// <summary>
         /// The signer Windows shows for this program - the simple name on the owner's Azure Artifact Signing
         /// certificate (CI writes the same value to publisher.txt). A download whose signer is anyone else is

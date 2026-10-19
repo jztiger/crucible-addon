@@ -133,12 +133,13 @@ function ns.db()
     return db
 end
 
--- Everything the client is about to write: the sealed ring, and the reference string built fresh. The ring
--- comes first and the string is built under pcall: whatever happens to it, the scans are complete on disk.
+-- Everything the client is about to write: the sealed ring, and the reference, quest and character strings built fresh.
+-- The ring comes first and each string is built under pcall: whatever happens to one, the scans are complete on disk.
 function ns.beforeWrite()
     ns.sealRing()
     if ns.Export and ns.Export.saveRef then pcall(ns.Export.saveRef) end
     if ns.Export and ns.Export.saveQuest then pcall(ns.Export.saveQuest) end
+    if ns.Export and ns.Export.saveChar then pcall(ns.Export.saveChar) end
 end
 
 -- What the player has chosen (Logic.settings): saved beats what was baked at the last install beats the default.

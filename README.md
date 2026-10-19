@@ -14,7 +14,7 @@ A small, read-only auction house notebook for World of Warcraft: Forever.
 - It scans when you open the auction house, or when you type a command (`/tally browse`, `/tally scan`) - see
   "Install" below for how the automatic scan works and how to turn it off. Nothing runs on a timer, and nothing
   else starts itself.
-- It never reads or stores who is selling: no player names of any kind.
+- It never reads or stores who is selling: no other player's names.
 - It is free. There is nothing to buy and no way to pay.
 
 ## Install

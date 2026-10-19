@@ -24,16 +24,21 @@ namespace Crucible.Tray
             return m.Success && int.TryParse(m.Groups[1].Value, out int v) ? v : 0;
         }
 
-        /// <summary>The version of the notice whose change is the opt-in Crucible Canvas paragraph (spec 2026-10-15 §8).</summary>
-        public const int CanvasVersion = 7;
+        /// <summary>
+        /// The newest notice version that asked the member to accept afresh: 6, the scope statement (owner 2026-10-11), planned as
+        /// the last re-accept. A later notice is shown once (<see cref="NeedsShowing"/>) and never forced - the owner's rulings of
+        /// 2026-10-16 (v7, Canvas) and 2026-10-18 (v8, the simulator). A notice the owner does want accepted afresh raises this number.
+        /// </summary>
+        public const int LastForcedVersion = 6;
 
         /// <summary>
         /// Whether "I understand" stands for the notice this build carries: when they accepted this version or a later one
-        /// (M124) - with one carry-over the owner ruled on 2026-10-16: v6 counts for v7, because v7 reads and sends nothing
-        /// new about anyone; it adds an opt-in feature, which is shown once (<see cref="NeedsShowing"/>), not re-accepted.
+        /// (M124) - and, for any notice after <see cref="LastForcedVersion"/>, when they accepted version 6 or a later one, so
+        /// a tray never stops at startup for a notice that only needs reading. Version 7 shipped with tray 0.100.0 (2026-10-18);
+        /// version 8 (the simulator) comes with tray 0.101.0 and is shown once, never re-accepted (owner 2026-10-18).
         /// </summary>
         public static bool IsAccepted(int acceptedVersion, int currentVersion) =>
-            currentVersion > 0 && (acceptedVersion >= currentVersion || (currentVersion == CanvasVersion && acceptedVersion == CanvasVersion - 1));
+            currentVersion > 0 && (acceptedVersion >= currentVersion || (currentVersion > LastForcedVersion && acceptedVersion >= LastForcedVersion));
 
         /// <summary>The Close-only showing of a notice they accepted by carry-over: once per version, recorded as noticeShownVersion.</summary>
         public static bool NeedsShowing(int shownVersion, int currentVersion) => currentVersion > 0 && shownVersion < currentVersion;

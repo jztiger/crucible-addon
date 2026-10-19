@@ -46,6 +46,9 @@ namespace Crucible.Tray
         private string reason = "";
         /// <summary>Which balloon is up: a click on the update one opens the download page.</summary>
         private bool balloonIsUpdate;
+        /// <summary>Help > About: the newest tray app and addon versions the server has told us of. Kept across the passes that learn
+        /// nothing new (the addon is asked about every six hours, the tray daily) and replaced only by a version, never by "no answer".</summary>
+        private string? trayOffered, addonOffered;
         /// <summary>Spec 2026-10-12: the version this process replaced, when it was started by the swap; null otherwise.</summary>
         private readonly string? updatedFrom;
 
@@ -76,7 +79,9 @@ namespace Crucible.Tray
             menu.Items.Add(restoreItem);
             menu.Items.Add("Reinstall the addon from GitHub", null, async (s, e) => await ReinstallAddon());
             menu.Items.Add("View log", null, (s, e) => OpenLog());
-            menu.Items.Add("View notice", null, (s, e) => Guarded("the notice window", () => { using (var n = new NoticeForm(SetupForm.NoticeText(), false)) n.ShowDialog(); }));
+            var help = new ToolStripMenuItem("Help");
+            help.DropDownItems.Add("About Crucible...", null, (s, e) => ShowAbout());
+            menu.Items.Add(help);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Quit", null, (s, e) => Quit());
             pauseItem.Click += (s, e) => TogglePause();
@@ -131,6 +136,7 @@ namespace Crucible.Tray
                 bool force = forceNext;
                 forceNext = false;
                 CycleReport report = await Task.Run(() => cycle.RunAsync(force));
+                if (report.AddonOffered != null) addonOffered = report.AddonOffered;
                 // Back on the UI thread, after the pass. A Canvas fault is its own: it must not hide what the pass reported.
                 SpanStatus canvas;
                 try { canvas = span.Tick(config); }
@@ -158,6 +164,7 @@ namespace Crucible.Tray
                 {
                     versionCheckedUtc = DateTime.UtcNow;
                     string? offered = await Task.Run(() => client.LatestVersionAsync());
+                    if (offered != null) trayOffered = offered;
                     // M112's nudge is now the fallback (spec 2026-10-12): a signed build fetches the update itself, so
                     // the person is only sent to the download page by an unsigned build, for a version that failed, or
                     // for one that three checks could not get. The core says which (review I1, I4).
@@ -269,6 +276,20 @@ namespace Crucible.Tray
                 try { MessageBox.Show("The Displays window could not open (" + e.GetType().Name + ").", AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
                 catch (Exception m) { log.Write("could not say so: " + m.GetType().Name); }
             }
+        }
+
+        /// <summary>
+        /// Help > About Crucible... (owner 2026-10-18): the versions installed here and the newest on offer, the release notes
+        /// and the notice. The words are <see cref="AboutText"/>'s; this only gathers what it is told, at the moment of the click.
+        /// </summary>
+        private void ShowAbout()
+        {
+            Guarded("the About window", () =>
+            {
+                string versions = AboutText.Versions(AppInfo.Version, trayOffered, AddonVersionHere(), addonOffered);
+                string notes = AboutText.ReleaseNotes(AboutForm.ChangelogText(), AboutText.ReleaseNoteEntries);
+                using (var about = new AboutForm(versions, notes, SetupForm.NoticeText())) about.ShowDialog();
+            });
         }
 
         /// <summary>Runs a menu or event handler so that nothing escapes it (an exception out of a handler would end the

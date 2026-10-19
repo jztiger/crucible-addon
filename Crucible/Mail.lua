@@ -24,7 +24,7 @@
 -- reference document on the next Sync or /crucible reload, like everything else.
 --
 -- M72: a member who switched "Record my sales" off on Your PCs gets captureSales = false in their own Data.lua
--- (Logic.capturesSales), and then nothing here reads the inbox at all. The server keeps none of their sales
+-- (Logic.capturesSales), and then nothing here reads the inbox at all. The website keeps none of their sales
 -- either way, so a copy of the addon from before this line changes nothing they keep.
 --
 -- 0.11.0 (D15): a Sync button on the mail window while the mailbox is open, with the "press Sync to upload"

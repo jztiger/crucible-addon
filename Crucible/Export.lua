@@ -167,3 +167,30 @@ function Export.saveQuest()
     db.questString = tagged
     return true
 end
+
+-- The character sheet -> CrucibleDB.charString, one "c1:<base64 JSON>" string (Logic.charTag), rebuilt from scratch each
+-- time, beside the reference and quest strings. Same contract on the other side: src/shared/char-doc.ts. What is written is
+-- Sheet.lua's last COMPLETE capture, with the time, the character's hash and the meta it was taken with - so this asks the
+-- client nothing, and a logout in the middle of a fight writes the sheet from before the fight. Nothing at all is written
+-- while the member's switch is off or the notice is below 6 (Logic.collectsChar), or before a capture has completed.
+-- -> true when a string was stored
+function Export.saveChar()
+    local db = ns.db()
+    db.charString = nil
+    if not Logic.collectsChar(ns.baked) then return false end
+    local sheet = ns.Sheet
+    if type(sheet) ~= "table" or type(sheet.last) ~= "table" then return false end
+    if not Export.available() then return false end
+    local doc = Logic.charDoc(sheet.last, sheet.lastAt, sheet.lastHash, sheet.lastMeta)
+    if not doc then return false end
+    local E = C_EncodingUtil
+    local okJson, json = pcall(E.SerializeJSON, doc)
+    if not okJson or type(json) ~= "string" or json == "" then return false end
+    local okB64, b64 = pcall(E.EncodeBase64, json)
+    if not okB64 or type(b64) ~= "string" then return false end
+    if string.find(b64, "%s") then b64 = string.gsub(b64, "%s+", "") end
+    local tagged = Logic.charTag(b64)
+    if Logic.charOf(tagged) == nil or #tagged > Logic.CHAR_MAX_BYTES then return false end
+    db.charString = tagged
+    return true
+end

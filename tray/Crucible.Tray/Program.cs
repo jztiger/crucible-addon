@@ -89,7 +89,7 @@ namespace Crucible.Tray
                 }
 
                 // A newer notice means the program does something they have not agreed to yet: ask again. A v6 acceptance
-                // carries over to v7 (Notice.IsAccepted), which the tray then shows once to read.
+                // carries over to v8 (Notice.IsAccepted), which the tray then shows once to read.
                 if (!Notice.IsAccepted(config.AcceptedNoticeVersion, Notice.VersionOf(SetupForm.NoticeText())) || !GameFolders.LooksLikeWow(config.WowFolder))
                 {
                     using (var setup = new SetupForm(config, true))
@@ -307,6 +307,8 @@ namespace Crucible.Tray
                 SetupForm.NoticeText().Contains("THE RISK")
                 && SetupForm.NoticeText().Contains("not made, approved or supported by Blizzard")
                 && Notice.VersionOf(SetupForm.NoticeText()) > 0);
+            // Help > About: the changelog is embedded under the name the window reads it by, and the core finds an entry in it.
+            Check("the release notes are inside, and carry an entry", () => AboutText.ReleaseNotes(AboutForm.ChangelogText(), 1).Length > 0);
 
             Check("this build's own signature is read: a signed build names its publisher, an unsigned one names nobody", () =>
             {
