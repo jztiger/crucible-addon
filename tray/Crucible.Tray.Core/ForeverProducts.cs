@@ -5,9 +5,9 @@ using System.Text.RegularExpressions;
 namespace Crucible.Tray
 {
     /// <summary>
-    /// World of Warcraft: Forever's product folders (_classic_beta_ today). They come from the server - its
-    /// FOREVER_PRODUCTS, carried in the addon manifest - because the folder is renamed at launch to a name nobody
-    /// knows yet. Every name is somebody else's text and becomes a folder name here, so each one is checked first.
+    /// World of Warcraft: Forever's product folders (_forever_, the live game's; the beta's _classic_beta_ was shut down
+    /// on 2026-11-03 and is never looked at again). They come from the server - its FOREVER_PRODUCTS, carried in the
+    /// addon manifest - so a renamed folder is one server setting. Every name is somebody else's text and becomes a folder name here, so each one is checked first.
     /// </summary>
     public static class ForeverProducts
     {
@@ -17,11 +17,11 @@ namespace Crucible.Tray
         /// <summary>A plain product folder name. \z, not $: $ would let a trailing newline through.</summary>
         private static readonly Regex Name = new Regex(@"^_[a-z0-9_]+_\z", RegexOptions.CultureInvariant);
 
-        /// <summary>What this program uses until the server has said otherwise: the beta's own folder.</summary>
-        public static IReadOnlyList<string> Default { get; } = Array.AsReadOnly(new[] { "_classic_beta_" });
+        /// <summary>What this program uses until the server has said otherwise: the live game's own folder.</summary>
+        public static IReadOnlyList<string> Default { get; } = Array.AsReadOnly(new[] { "_forever_" });
 
         /// <summary>
-        /// A folder name such as _classic_beta_ and nothing else - no separator, no dot, no capital. Never retail's:
+        /// A folder name such as _forever_ and nothing else - no separator, no dot, no capital. Never retail's:
         /// a Forever addon does not belong in somebody's retail game, whatever a list says.
         /// </summary>
         public static bool IsProductName(string? name) =>

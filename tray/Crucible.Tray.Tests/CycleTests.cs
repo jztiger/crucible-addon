@@ -39,7 +39,7 @@ namespace Crucible.Tray.Tests
         public int AddonStatus = 200;
         public int AddonRequests;
         /// <summary>The server's FOREVER_PRODUCTS, as its manifest carries them. Null: a server from before the list.</summary>
-        public string[]? Products = { "_classic_beta_" };
+        public string[]? Products = { "_forever_" };
         public string ETag = "\"v1\"";
         public int IngestStatus = 200;
         /// <summary>The Canvas addon on offer at /api/v1/addons/CrucibleCanvas (spec 2026-10-15 §7.2).</summary>
@@ -87,7 +87,7 @@ namespace Crucible.Tray.Tests
         private static string Quote(string s) => "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n") + "\"";
 
         /// <param name="product">The game's product folder on this pretend PC - renamed at launch, retail on some PCs.</param>
-        public World(bool addonInstalled = true, string product = "_classic_beta_")
+        public World(bool addonInstalled = true, string product = "_forever_")
         {
             Product = product;
             Wow = Path.Combine(Dir.Path, "World of Warcraft");
@@ -700,11 +700,11 @@ namespace Crucible.Tray.Tests
         [Fact]
         public async Task Launch_day_the_folder_is_renamed_and_one_pass_learns_it_and_the_saved_file_then_goes_out()
         {
-            // The PC still holds the beta's list; the server now says the game is in _classic_forever_.
+            // The PC still holds the list from before; the server now says the game is in _classic_forever_.
             using var w = new World(product: "_classic_forever_");
             w.Products = new[] { "_classic_forever_", "_classic_beta_" };
             w.Save("CrucibleDB = { one = 1 }");
-            Assert.Equal(new[] { "_classic_beta_" }, w.Config.Products);
+            Assert.Equal(ForeverProducts.Default, w.Config.Products);
 
             CycleReport first = await w.Cycle.RunAsync(true);
             Assert.Equal(TrayState.Ok, first.State); // not "the folder is not there"
@@ -728,6 +728,27 @@ namespace Crucible.Tray.Tests
             CycleReport r = await w.Cycle.RunAsync(true);
             Assert.Equal("0.9.0", r.AddonInstalled);
             Assert.Equal("0.9.0", AddonInstaller.InstalledVersion(Path.GetDirectoryName(w.DataLua)!));
+        }
+
+        [Fact]
+        public async Task The_betas_folder_is_ignored_the_live_folder_gets_its_own_install_and_the_beta_copy_is_left_alone()
+        {
+            // Launch (2026-11-04): the beta is shut down (owner, 2026-11-03). Its folder may still sit beside the live
+            // game's with the addon in it, and nobody is asked to delete it: the server lists only _forever_, so the beta
+            // copy is neither updated nor read, and the live folder gets its own install on that same pass.
+            using var w = new World(product: "_classic_beta_");
+            string live = Path.Combine(w.Wow, "_forever_", "Interface", "AddOns");
+            Directory.CreateDirectory(live);
+            w.Config.Products = new[] { "_classic_beta_" }; // a PC from the beta days, still holding the beta's list
+            w.Products = new[] { "_forever_" };
+            w.AddonVersion = "0.9.1"; // newer than the beta copy's 0.9.0: an update it would get, were it still looked at
+
+            CycleReport r = await w.Cycle.RunAsync(true);
+            Assert.True(r.ProductsChanged);
+            Assert.Equal(new[] { "_forever_" }, w.Config.Products);
+            Assert.Equal("0.9.1", AddonInstaller.InstalledVersion(Path.Combine(live, "Crucible")));
+            Assert.Equal("0.9.0", AddonInstaller.InstalledVersion(Path.GetDirectoryName(w.DataLua)!)); // the beta copy, untouched
+            Assert.Equal(1, r.Wrote); // Data.lua in the live folder only
         }
 
         [Fact]
@@ -842,7 +863,7 @@ namespace Crucible.Tray.Tests
             await w.Cycle.RunAsync(false);
             List<FakeServer.Seen> posts = w.ItemCachePosts();
             Assert.Single(posts);
-            Assert.EndsWith("/api/v1/item-cache?product=_classic_beta_", posts[0].Url, StringComparison.Ordinal);
+            Assert.EndsWith("/api/v1/item-cache?product=_forever_", posts[0].Url, StringComparison.Ordinal);
             Assert.Equal(Payload.Gzip(ItemCache.Filter(cache)!), posts[0].Body);
 
             await w.Cycle.RunAsync(true); // "Upload now" asks again - the same rows are not sent again

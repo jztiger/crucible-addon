@@ -122,7 +122,7 @@ namespace Crucible.Tray
         }
 
         /// <summary>
-        /// The picked folder holds at least one product folder such as _classic_beta_ - ANY one, listed or not. This
+        /// The picked folder holds at least one product folder such as _forever_ - ANY one, listed or not. This
         /// only asks "is this a World of Warcraft folder": on launch day the game's folder has a new name that this
         /// PC's list does not know yet, and the program must still run long enough to fetch the new list.
         /// </summary>

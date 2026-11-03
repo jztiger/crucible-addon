@@ -1,5 +1,8 @@
 Crucible changelog - newest first. Features inside the notice's scope are listed here (notice version 8).
 
+1.0.0 - Launch (World of Warcraft: Forever opens 2026-11-04). The tray looks only in the live game's folder,
+         _forever_, and installs the addon there by itself; the beta's folder (_classic_beta_) is ignored - nothing
+         in it is read or updated, and you need not delete it. Otherwise the same as 0.101.0.
 0.101.0 - The simulator: your character's sheet - name, level, gear, bag items, spells, talents, pet and stats -
          goes with your data. Switch it off on the website's Your PCs page. The notice gains a section about it
          (version 8) and is shown once; nothing to re-accept. Help > About Crucible in the tray menu shows the

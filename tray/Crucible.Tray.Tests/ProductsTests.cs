@@ -19,9 +19,10 @@ namespace Crucible.Tray.Tests
         private static readonly string[] Beta = { "_classic_beta_" };
 
         [Fact]
-        public void With_nothing_ever_received_it_is_the_betas_folder()
+        public void With_nothing_ever_received_it_is_the_live_games_folder()
         {
-            Assert.Equal(Beta, ForeverProducts.Default);
+            // The beta was shut down the day before launch (2026-11-03); nothing starts from its folder any more.
+            Assert.Equal(new[] { "_forever_" }, ForeverProducts.Default);
         }
 
         [Theory]
@@ -200,14 +201,14 @@ namespace Crucible.Tray.Tests
             + "\"clientId\":\"abc123.access\",\"clientSecret\":\"s3cr3t-client-secret\",\"uploadKey\":\"upl0ad-key-43-chars\"}";
 
         [Fact]
-        public void A_download_and_a_config_from_before_the_list_both_start_with_the_betas_folder()
+        public void A_download_and_a_config_from_before_the_list_both_start_with_the_live_games_folder()
         {
             using var dir = new TempDir();
             TrayConfig c = ConfigStore.ImportDownload(Download)!;
-            Assert.Equal(new[] { "_classic_beta_" }, c.Products);
+            Assert.Equal(new[] { "_forever_" }, c.Products);
             string path = dir.File("config.json");
             ConfigStore.Save(path, c, new FakeProtector());
-            Assert.Equal(new[] { "_classic_beta_" }, ConfigStore.Load(path, new FakeProtector())!.Products);
+            Assert.Equal(new[] { "_forever_" }, ConfigStore.Load(path, new FakeProtector())!.Products);
         }
 
         [Fact]
