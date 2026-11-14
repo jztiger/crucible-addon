@@ -1,5 +1,9 @@
 Crucible changelog - newest first. Features inside the notice's scope are listed here (notice version 8).
 
+1.0.2 - Fix: a full scan counts as complete again. The game keeps the details of only a couple of thousand
+         items at a time, so once the auction house grew past that a third of its rows had no item link when the
+         scan looked for one, and every full scan since 2026-11-08 ended "INCOMPLETE". Each row is now read at
+         the moment the game hands its item over. Nothing for you to do, and a full scan takes no longer.
 1.0.1 - Tooltips. A green, blue or purple piece of gear shows what it most likely disenchants into: each
          result with its chance, how many, and its auction price, and the average worth on top. The chances
          are the table the guides give, not yet measured on Forever, so the worth is marked "~". Hovering a
