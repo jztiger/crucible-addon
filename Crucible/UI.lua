@@ -2,10 +2,14 @@
 --
 --   Lowest now: 45s (7m)                                    cheapest listing, from the last quick scan
 --   Market value: 52s · sells ~3.2 a day                   what the server worked out, from Data.lua (M3)
+--   Stack of 20: 9g lowest now · 10g 40s market value      on a stack in the bags or the bank only: both x its size
 --   Vendor: 10c                                             when a visited vendor sells it
 --   Craft cost: 4s 90c                     Profit: 37s 85c  green, or "Profit: -..." in red: crafting to sell at
 --     4 x Medium Leather @ 1s 20c                   4s 80c  market value (else Lowest now), less the house's cut.
 --     1 x Coarse Thread (vendor)                       10c  Left out when a guess (Logic.craftingProfit).
+--   Disenchant: ~14s 2c                                     on green, blue and purple armor and weapons: what it
+--     75%  2-5 x Soul Dust                      4s 24c each  most likely disenchants into, and the average worth
+--     20%  1-2 x Lesser Mystic Essence          7s 70c each  (an estimate: Logic.disenchant's table).
 --
 -- 0.11.0: the Tally 2.0 words (docs/crucible-2.0/README.md) - Lowest now was Min AH Price, Market value was
 -- Market, Craft cost was Crafting Cost, and a loss is a red Profit with a minus sign rather than "Loss".
@@ -28,6 +32,8 @@ local LABEL = "|cff33ff99Lowest now|r: "
 local CRAFT_LABEL = "|cff33ff99Craft cost|r: "
 local VENDOR_LABEL = "|cff33ff99Vendor|r: "
 local MARKET_LABEL = "|cff33ff99Market value|r: "
+local STACK_LABEL = "|cff33ff99Stack of "
+local DISENCHANT_LABEL = "|cff33ff99Disenchant|r: "
 local PROFIT, LOSS, DIM, CLOSE = "|cff00ff00Profit: ", "|cffff2020Profit: -", "|cff808080", "|r"
 
 ---------------------------------------------------------------------------------------------------
@@ -109,6 +115,44 @@ function UI.marketLine(itemID)
         line = line .. " " .. (stale and ("|cffff8000" .. text .. "|r") or text)
     end
     return line
+end
+
+-- -> "Stack of N: <N x lowest> lowest now · <N x market> market value" for N of the item, or nil for one item or
+-- when it has neither price. Lowest now and Market value are the price of ONE whatever is hovered, while the game's
+-- own Sell Price line right above them is the whole stack's - so a stack of 20 read as if a vendor paid about what
+-- the auction house does (owner, 2026-11-12). The stack's figures are the same two prices times its size.
+function UI.stackLine(itemID, count)
+    if ns.isSecret(itemID) or type(itemID) ~= "number" then return nil end
+    if ns.isSecret(count) or type(count) ~= "number" or count < 2 then return nil end
+    local db = CrucibleDB
+    if type(db) ~= "table" then return nil end
+    local parts = {}
+    local price = type(db.prices) == "table" and db.prices[itemID] or nil
+    if type(price) == "number" and price > 0 then parts[#parts + 1] = money(price * count) .. " lowest now" end
+    local value = type(db.market) == "table" and not Logic.marketNotYet(db) and db.market[itemID] or nil
+    if type(value) == "number" and value > 0 then parts[#parts + 1] = money(value * count) .. " market value" end
+    if #parts == 0 then return nil end
+    return STACK_LABEL .. string.format("%.0f", count) .. "|r: " .. table.concat(parts, " · ")
+end
+
+-- How many the bag or bank slot behind this tooltip holds, or nil when the tooltip is not a slot's (a link, an
+-- auction, a reward). The game fills a slot's tooltip through SetBagItem(bag, slot), for the bags and the bank
+-- alike, and keeps that as the info it is processing while it calls us (Blizzard's TooltipDataHandler.lua); the
+-- slot then says which item it holds and how many - so the size is the hovered stack's own, 5 or 20. Two reads of
+-- the player's own bags, nothing written and nothing kept.
+local function stackBehind(tooltip, itemID)
+    if type(tooltip.GetProcessingTooltipInfo) ~= "function" then return nil end
+    local info = tooltip:GetProcessingTooltipInfo()
+    if ns.isSecret(info) or type(info) ~= "table" then return nil end
+    local getter, args = info.getterName, info.getterArgs
+    if ns.isSecret(getter) or getter ~= "GetBagItem" or ns.isSecret(args) or type(args) ~= "table" then return nil end
+    local bag, slot = args[1], args[2]
+    if ns.isSecret(bag) or ns.isSecret(slot) or type(bag) ~= "number" or type(slot) ~= "number" then return nil end
+    if type(C_Container) ~= "table" or type(C_Container.GetContainerItemInfo) ~= "function" then return nil end
+    local held = C_Container.GetContainerItemInfo(bag, slot)
+    if ns.isSecret(held) or type(held) ~= "table" then return nil end
+    if ns.isSecret(held.itemID) or held.itemID ~= itemID then return nil end
+    return held.stackCount
 end
 
 -- -> "Vendor: <unit price>" for an item a visited vendor sells for gold in unlimited supply, else nil.
@@ -209,6 +253,53 @@ function UI.craftLine(itemID)
     return line, result, mats
 end
 
+-- The quality, item level and class of an item as far as the client has it loaded: GetItemInfo's 3rd, 4th and
+-- 12th returns, read by number out of a table so no run of placeholders can be miscounted (see bindsOnPickup).
+local function gearFacts(itemID)
+    local fn
+    if type(C_Item) == "table" and type(C_Item.GetItemInfo) == "function" then
+        fn = C_Item.GetItemInfo
+    elseif type(GetItemInfo) == "function" then
+        fn = GetItemInfo
+    else
+        return nil
+    end
+    local ok, info = pcall(function() return { fn(itemID) } end)
+    if not ok then return nil end
+    local quality, level, classID = info[3], info[4], info[12]
+    if ns.isSecret(quality) or ns.isSecret(level) or ns.isSecret(classID) then return nil end
+    return quality, classID, level
+end
+
+-- -> "Disenchant: ~<average>", then one { left, right } per result, most likely first:
+--      "  75%  2-5 x Soul Dust"     "4s 24c each"
+-- nil for anything that is not green, blue or purple armor or a weapon. The odds are Logic.disenchant's table,
+-- an estimate, hence the "~"; each result is priced at its market value, else at Lowest now, and the average is
+-- over many disenchants. Shown on a tooltip only: never a sort, a filter or a highlight on auction listings (C13).
+function UI.disenchantLines(itemID)
+    if ns.isSecret(itemID) or type(itemID) ~= "number" then return nil end
+    local db = CrucibleDB
+    if type(db) ~= "table" then return nil end
+    local results = Logic.disenchant(gearFacts(itemID))
+    if not results then return nil end
+    local market = type(db.market) == "table" and not Logic.marketNotYet(db) and db.market or nil
+    local total, missing, units = Logic.disenchantValue(results, market, db.prices)
+    local rows = {}
+    for i = 1, #results do
+        local r = results[i]
+        local count = string.format("%.0f", r[3])
+        if r[4] ~= r[3] then count = count .. "-" .. string.format("%.0f", r[4]) end
+        rows[i] = {
+            "  " .. string.format("%.0f", r[2]) .. "%  " .. count .. " x " .. itemName(r[1]),
+            units[i] and (money(units[i]) .. " each") or (DIM .. "no price" .. CLOSE),
+        }
+    end
+    if not total then return DISENCHANT_LABEL .. "no price yet", rows end
+    local line = DISENCHANT_LABEL .. "~" .. money(total)
+    if missing > 0 then line = line .. " + " .. string.format("%.0f", missing) .. " with no price" end
+    return line, rows
+end
+
 -- Two columns where the tooltip has them, the same words on one line where it does not. soft: the quieter
 -- off-white of the mat lines, so the cost line above them stays the headline.
 local function addPair(tooltip, left, right, soft)
@@ -228,12 +319,21 @@ local function addLine(tooltip, itemID)
     local line, market = UI.priceLine(itemID)
     if line then tooltip:AddLine(line) end
     if market then tooltip:AddLine(market) end
+    -- Under its own pcall: whatever a client does with the slot behind a tooltip, the lines below still arrive.
+    local okStack, count = pcall(stackBehind, tooltip, itemID)
+    local stack = okStack and UI.stackLine(itemID, count) or nil
+    if stack then tooltip:AddLine(stack) end
     local vendor = UI.vendorLine(itemID)
     if vendor then tooltip:AddLine(vendor) end
     local craft, result, mats = UI.craftLine(itemID)
-    if not craft then return end
-    if result then addPair(tooltip, craft, result) else tooltip:AddLine(craft) end
-    for i = 1, #mats do addPair(tooltip, mats[i][1], mats[i][2], true) end
+    if craft then
+        if result then addPair(tooltip, craft, result) else tooltip:AddLine(craft) end
+        for i = 1, #mats do addPair(tooltip, mats[i][1], mats[i][2], true) end
+    end
+    local disenchant, results = UI.disenchantLines(itemID)
+    if not disenchant then return end
+    tooltip:AddLine(disenchant)
+    for i = 1, #results do addPair(tooltip, results[i][1], results[i][2], true) end
 end
 
 local function fromTooltipData(tooltip, data)

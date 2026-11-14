@@ -5,6 +5,9 @@ October 2026; `/tally` now only prints the new name.
 
 - **Lowest now** and **Market value** on item tooltips, from the group's scans, with how many sell a day once there
   is enough history.
+- **Stack of N** on a stack in your bags or bank: both prices times that stack's size.
+- **Disenchant** on green, blue and purple gear: what it most likely disenchants into - each result with its
+  chance and its price - and the average worth. The chances are an estimate, so the worth is marked `~`.
 - **Craft cost** for anything you can craft - every mat with its price (vendor price when a vendor sells it) - and
   the **Profit** (or a red **Profit** with a minus sign) of crafting it to sell, after the auction house's cut.
 - The cost or profit next to every recipe in the profession window, and a **Profit** panel for a whole profession.

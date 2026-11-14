@@ -9,7 +9,7 @@ ns = ns or {}
 local L = {}
 ns.Logic = L
 
-L.VERSION = "1.0.0"
+L.VERSION = "1.0.1"
 -- Two independent version counters, mirroring the server (src/shared/scan-schema.ts SCAN_SCHEMA_VERSION,
 -- src/shared/ref-doc.ts REF_SCHEMA_VERSION): the scan document's shape (replicate, browse) has not changed
 -- since M1, so buildDoc still tags SCAN_SCHEMA; the reference document gained items, suffixes and named
@@ -651,6 +651,83 @@ function L.cheapestRecipe(recipes, prices, vendor)
     end
     if not best then return nil end
     return best.id, best.total, best.missing, best.each, best.recipe
+end
+
+---------------------------------------------------------------------------------------------------
+-- Disenchanting (owner, 2026-11-13: "the items most likely to DE to and their AH value")
+---------------------------------------------------------------------------------------------------
+
+-- The game never tells an addon what an item disenchants into - the roll is the server's - so the odds are a
+-- table. This is the one the Forever guides give (wow-professions.com and forevermastery.com, read 2026-11-13),
+-- which is the long-known Classic table: bands of ITEM level, green armor mostly dust, green weapons mostly
+-- essence, a blue its band's shard. Neither guide measured it on Forever, so the tooltip says "~". Two things
+-- are Classic's own and in neither guide: how many shards or crystals a purple gives, and 80/20 in the lowest
+-- band, which has no shard. Left out: the Nexus Crystal a level 56+ blue gives about once in 200.
+-- Each band: its top item level, the dust with how few and how many, the essence likewise, the shard.
+local DISENCHANT_BANDS = {
+    { 15, 10940, 1, 2, 10938, 1, 2 }, -- Strange Dust, Lesser Magic Essence, no shard
+    { 20, 10940, 2, 3, 10939, 1, 2, 10978 }, -- Strange Dust, Greater Magic Essence, Small Glimmering Shard
+    { 25, 10940, 4, 6, 10998, 1, 2, 10978 }, -- Strange Dust, Lesser Astral Essence, Small Glimmering Shard
+    { 30, 11083, 1, 2, 11082, 1, 2, 11084 }, -- Soul Dust, Greater Astral Essence, Large Glimmering Shard
+    { 35, 11083, 2, 5, 11134, 1, 2, 11138 }, -- Soul Dust, Lesser Mystic Essence, Small Glowing Shard
+    { 40, 11137, 1, 2, 11135, 1, 2, 11139 }, -- Vision Dust, Greater Mystic Essence, Large Glowing Shard
+    { 45, 11137, 2, 5, 11174, 1, 2, 11177 }, -- Vision Dust, Lesser Nether Essence, Small Radiant Shard
+    { 50, 11176, 1, 2, 11175, 1, 2, 11178 }, -- Dream Dust, Greater Nether Essence, Large Radiant Shard
+    { 55, 11176, 2, 5, 16202, 1, 2, 14343 }, -- Dream Dust, Lesser Eternal Essence, Small Brilliant Shard
+    { 60, 16204, 1, 2, 16203, 1, 2, 14344 }, -- Illusion Dust, Greater Eternal Essence, Large Brilliant Shard
+    { math.huge, 16204, 2, 5, 16203, 1, 3, 14344 }, -- 61 and up: the same three, more of them
+}
+local NEXUS_CRYSTAL = 20725
+local GREEN, BLUE, PURPLE, WEAPON, ARMOR = 2, 3, 4, 2, 4 -- the game's own item quality and item class numbers
+
+-- What a piece of gear disenchants into, most likely first: { { itemID, chance in percent, fewest, most }, ... }
+-- -> nil for anything but green, blue or purple armor and weapons, where the table has no row, and for an item
+-- the client has not loaded yet (no level).
+function L.disenchant(quality, classID, level)
+    if (classID ~= WEAPON and classID ~= ARMOR) or not isCount(level, 5) then return nil end
+    local band
+    for i = 1, #DISENCHANT_BANDS do
+        band = DISENCHANT_BANDS[i]
+        if level <= band[1] then break end
+    end
+    local shard = band[8]
+    if quality == GREEN then
+        local dust, essence = { band[2], 20, band[3], band[4] }, { band[5], 20, band[6], band[7] }
+        local results = { dust, essence }
+        if classID == WEAPON then results = { essence, dust } end
+        results[1][2] = shard and 75 or 80
+        if shard then results[3] = { shard, 5, 1, 1 } end
+        return results
+    elseif quality == BLUE then
+        return shard and { { shard, 100, 1, 1 } } or nil
+    elseif quality == PURPLE then
+        if level > 60 then return { { NEXUS_CRYSTAL, 100, 1, 2 } } end
+        if level > 55 then return { { NEXUS_CRYSTAL, 100, 1, 1 } } end
+        if level > 40 then return { { shard, 100, 2, 4 } } end
+    end
+    return nil
+end
+
+-- What disenchanting it is worth on average: each result's chance x its middle count x its price - the server's
+-- market value where there is one, else today's cheapest listing.
+-- -> the average in copper (nil when no result has a price), how many results have no price, and each result's
+--    unit price in the results' own order (false where there is none)
+function L.disenchantValue(results, market, prices)
+    local total, missing, units = 0, 0, {}
+    for i = 1, #results do
+        local r = results[i]
+        local unit = type(market) == "table" and market[r[1]] or nil
+        if not isCount(unit, 1) then unit = type(prices) == "table" and prices[r[1]] or nil end
+        if isCount(unit, 1) then
+            units[i] = unit
+            total = total + r[2] / 100 * (r[3] + r[4]) / 2 * unit
+        else
+            units[i] = false
+            missing = missing + 1
+        end
+    end
+    if missing == #results then return nil, missing, units end
+    return math.floor(total + 0.5), missing, units
 end
 
 -- Files one recipe under its output item; seeing the same recipe again replaces it. name, professionName

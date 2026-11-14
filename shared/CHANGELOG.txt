@@ -1,5 +1,11 @@
 Crucible changelog - newest first. Features inside the notice's scope are listed here (notice version 8).
 
+1.0.1 - Tooltips. A green, blue or purple piece of gear shows what it most likely disenchants into: each
+         result with its chance, how many, and its auction price, and the average worth on top. The chances
+         are the table the guides give, not yet measured on Forever, so the worth is marked "~". Hovering a
+         stack in your bags or bank adds "Stack of N": Lowest now and Market value times that stack's size
+         (the two lines above it are the price of one). Fix: the ledger window is wider, and no amount or
+         item name wraps onto the row below.
 1.0.0 - Launch (World of Warcraft: Forever opens 2026-11-04). The tray looks only in the live game's folder,
          _forever_, and installs the addon there by itself; the beta's folder (_classic_beta_) is ignored - nothing
          in it is read or updated, and you need not delete it. Otherwise the same as 0.101.0.

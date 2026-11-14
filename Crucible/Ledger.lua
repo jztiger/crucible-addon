@@ -19,21 +19,45 @@ local Ledger = {}
 ns.Ledger = Ledger
 
 local MAX_DAYS, MAX_ITEMS = 30, 200 -- the server's caps; a longer table is cut here too
-local WIDTH, ROW_H, VISIBLE = 548, 16, 14
+local ROW_H, VISIBLE = 16, 14
 local TOP = 52 -- where the rows start, below the title and the column headers
-local DAY_COLUMNS = {
-    { "day", "Day", 10, 62, "LEFT" },
-    { "gold", "Received", 74, 84, "RIGHT" },
-    { "sold", "Sold", 160, 36, "RIGHT" },
-    { "back", "Back", 198, 36, "RIGHT" },
-}
-local ITEM_COLUMNS = {
-    { "name", "Item", 250, 124, "LEFT" },
-    { "units", "Sold", 376, 30, "RIGHT" },
-    { "gold", "Received", 408, 70, "RIGHT" },
-    { "last", "Last", 480, 28, "RIGHT" },
-    { "back", "Back", 510, 30, "RIGHT" },
-}
+
+-- The two lists side by side, each a striped row of columns set out left to right: { key, heading, width, justify }.
+-- The widths are the widest text a column has to hold, measured on the live client (2026-11-12, the small white
+-- font): a digit is up to 6.3 wide, a letter about 5.7, and a coin with its space 15 - the game draws its coins 14
+-- high whatever the font. So "20g 46s 23c" is 79 wide, MONEY_W holds "99,999g 99s 99c" (about 104) and NAME_W a
+-- name of 34 letters. At 70 the item list's money column wrapped every gold-silver-copper amount onto a second
+-- line, over the row below, and at 124 so did every name longer than 21 letters.
+local MONEY_W, NAME_W = 108, 200
+local EDGE, INSET, GAP = 4, 6, 4 -- window edge to a list, a list's edge to its text, between two columns
+
+-- Gives each column its x in the window: -> the columns as { key, heading, x, width, justify }, the list's width.
+local function place(left, columns)
+    local placed, x = {}, left + INSET
+    for c = 1, #columns do
+        local key, heading, width, justify = columns[c][1], columns[c][2], columns[c][3], columns[c][4]
+        placed[c] = { key, heading, x, width, justify }
+        x = x + width + GAP
+    end
+    return placed, x - GAP + INSET - left
+end
+
+local DAY_LEFT = EDGE
+local DAY_COLUMNS, DAY_WIDTH = place(DAY_LEFT, {
+    { "day", "Day", 56, "LEFT" },
+    { "gold", "Received", MONEY_W, "RIGHT" },
+    { "sold", "Sold", 38, "RIGHT" },
+    { "back", "Back", 34, "RIGHT" },
+})
+local ITEM_LEFT = DAY_LEFT + DAY_WIDTH + EDGE
+local ITEM_COLUMNS, ITEM_WIDTH = place(ITEM_LEFT, {
+    { "name", "Item", NAME_W, "LEFT" },
+    { "units", "Sold", 38, "RIGHT" },
+    { "gold", "Received", MONEY_W, "RIGHT" },
+    { "last", "Last", 28, "RIGHT" },
+    { "back", "Back", 34, "RIGHT" },
+})
+local WIDTH = ITEM_LEFT + ITEM_WIDTH + EDGE
 local FRAME_NAME = "CrucibleLedgerFrame" -- global, so UISpecialFrames (the game's own Escape handling) can close it
 local OFF_TEXT = "Record my sales is off on the website - this window has nothing to show."
 local NONE_TEXT = "no sales yet"
@@ -148,6 +172,9 @@ local function newRow(parent, columns, x, width, i)
     for c = 1, #columns do
         local text = newLabel(row, "GameFontHighlightSmall", columns[c][5])
         text:SetWidth(columns[c][4])
+        -- One line, always: a font string with a width wraps by default, and a second line lands on the next row.
+        -- Text too long for its column is cut short with the game's own "..." instead (the longest item names).
+        text:SetWordWrap(false)
         text:SetPoint("LEFT", row, "LEFT", columns[c][3] - x, 0)
         row[columns[c][1]] = text
     end
@@ -199,8 +226,8 @@ local function build()
 
     p.dayRows, p.itemRows = {}, {}
     for i = 1, VISIBLE do
-        p.dayRows[i] = newRow(p, DAY_COLUMNS, 4, 236, i)
-        local row = newRow(p, ITEM_COLUMNS, 244, WIDTH - 248, i)
+        p.dayRows[i] = newRow(p, DAY_COLUMNS, DAY_LEFT, DAY_WIDTH, i)
+        local row = newRow(p, ITEM_COLUMNS, ITEM_LEFT, ITEM_WIDTH, i)
         row.glow = row:CreateTexture(nil, "BORDER")
         row.glow:SetAllPoints()
         row.glow:SetColorTexture(1, 0.82, 0, 0.14)
