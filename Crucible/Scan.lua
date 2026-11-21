@@ -175,7 +175,7 @@ local function ready(api, events)
     local meta = ns.meta()
     local problem = Logic.metaProblem(meta)
     if problem then
-        ns.print(problem .. "; try again in a moment")
+        ns.print(problem)
         return nil
     end
     return meta
@@ -1536,7 +1536,7 @@ function Scan.selftest()
     meta.realm = SELFTEST_REALM
     local problem = Logic.metaProblem(meta)
     if problem then
-        ns.print(problem .. "; try again in a moment")
+        ns.print(problem)
         return
     end
 

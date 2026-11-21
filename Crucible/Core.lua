@@ -208,7 +208,12 @@ function ns.meta()
         meta.interface = interface
     end
     if type(GetCurrentRegion) == "function" then meta.region = GetCurrentRegion() end
-    if type(GetRealmName) == "function" then meta.realm = GetRealmName() end
+    -- The realm: the game's own name, else the one Data.lua carries (Logic.realmLabel) - build 1.60.1.71037 names
+    -- none. A secret value can be neither compared nor measured, so it is no name at all.
+    local realm
+    if type(GetRealmName) == "function" then realm = GetRealmName() end
+    if ns.isSecret(realm) then realm = nil end
+    meta.realm = Logic.realmLabel(realm, ns.baked)
     if type(UnitFactionGroup) == "function" then meta.faction = (UnitFactionGroup("player")) end
     -- copper: true / false, or left out when the client has no such function
     if type(C_AuctionHouse) == "table" and type(C_AuctionHouse.SupportsCopperValues) == "function" then

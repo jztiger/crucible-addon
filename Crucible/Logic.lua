@@ -9,7 +9,7 @@ ns = ns or {}
 local L = {}
 ns.Logic = L
 
-L.VERSION = "1.0.2"
+L.VERSION = "1.0.3"
 -- Two independent version counters, mirroring the server (src/shared/scan-schema.ts SCAN_SCHEMA_VERSION,
 -- src/shared/ref-doc.ts REF_SCHEMA_VERSION): the scan document's shape (replicate, browse) has not changed
 -- since M1, so buildDoc still tags SCAN_SCHEMA; the reference document gained items, suffixes and named
@@ -214,15 +214,34 @@ function L.canReplicate(now, lastAt, cooldown)
     return false, cooldown - elapsed
 end
 
--- nil when the realm / faction / build are good enough to label a scan, else what is wrong.
+-- Whether a realm name can label a scan: the server's own bounds (src/shared/scan-schema.ts).
+local function usableRealm(name)
+    return type(name) == "string" and name ~= "" and #name <= 64
+end
+
+-- The realm name a scan, and every other document, is filed under. The game's own answer comes first. Build
+-- 1.60.1.71037 (2026-11-20) answers GetRealmName() with an empty string - Blizzard's own friends list stopped
+-- comparing realm names in that build - so the name then comes from Data.lua: `baked.realm`, the one the server
+-- last knew for this member's auction house (src/server/datafile.ts, realmOf). nil when neither names one;
+-- L.metaProblem below then says what to do. `reported` must not be a secret value: ns.meta() drops one first.
+function L.realmLabel(reported, baked)
+    if usableRealm(reported) then return reported end
+    if type(baked) == "table" and usableRealm(baked.realm) then return baked.realm end
+    return nil
+end
+
+-- nil when the realm / faction / build are good enough to label a scan, else the whole line to print: what is
+-- wrong and what to do. A faction or a build the client has not got yet comes by itself; a realm name does not,
+-- since build 71037 - it comes with the tray app's next data file (L.realmLabel).
 function L.metaProblem(meta)
-    if type(meta) ~= "table" then return "the client did not report a realm" end
-    if type(meta.realm) ~= "string" or meta.realm == "" or #meta.realm > 64 then
-        return "the client did not report a usable realm name"
+    if type(meta) ~= "table" then return "the client did not report a realm; try again in a moment" end
+    if not usableRealm(meta.realm) then
+        return "the game did not name its realm, and Crucible's data file does not name one yet"
+            .. " - let the tray app update it, then press Sync"
     end
-    if not FACTIONS[meta.faction] then return "the client did not report a faction" end
+    if not FACTIONS[meta.faction] then return "the client did not report a faction; try again in a moment" end
     if type(meta.build) ~= "string" or meta.build == "" or #meta.build > 64 then
-        return "the client did not report a build number"
+        return "the client did not report a build number; try again in a moment"
     end
     return nil
 end
