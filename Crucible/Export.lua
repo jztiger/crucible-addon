@@ -118,7 +118,7 @@ function Export.save(doc)
 end
 
 -- What the addon has learned that never changes (vendor prices, recipes) -> CrucibleDB.ref, one
--- "r4:<base64 JSON>" string (Logic.refTag), rebuilt from scratch each time. Called when the client is about to write the
+-- "r5:<base64 JSON>" string (Logic.refTag), rebuilt from scratch each time. Called when the client is about to write the
 -- saved file (logout, /crucible reload), so it says nothing: there is nobody left to read it. The bake step
 -- (src/shared/ref-doc.ts, bake.ts) turns these strings into Data.lua. -> true when a string was stored
 function Export.saveRef()

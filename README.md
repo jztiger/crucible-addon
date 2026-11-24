@@ -14,7 +14,8 @@ October 2026; `/tally` now only prints the new name.
 - Posting help: a suggested price on the Sell tab, and an **Undercut?** list of your own auctions that have been
   undercut. You press the game's own Post and Cancel Auction buttons yourself, every time.
 - A shopping list planned on the group's website, with **Search All** to price every mat in one go.
-- Your own sales and returns, read from your mailbox, with a **Ledger** window of your last 30 days.
+- Your own sales and returns, read from your mailbox, with a **Ledger** window of your last 30 days; and, since
+  1.1.0, the auctions you won - what you bought and what you paid - which show on the website's Ledger.
 - A recorder for the group's own quest map, and your character's sheet for the group's DPS simulator.
 
 ## What it does and does not do
@@ -90,12 +91,13 @@ uses, so hovering an item and opening the panel never disagree.
 
 When you open your mailbox, Crucible reads what it's already showing you: for a sold auction, the item, the count,
 the price you received, the deposit and the auction house's cut; for one that expired or was cancelled, the item and
-the count. It also reads how many days the mail has left, only so it can tell the same mail apart from a new one
-later. It reads while the mailbox is open, and only because you opened it; nothing goes anywhere until you press
-**Sync** (on the strip, on the mail window itself, or `/crucible reload`). It never reads or stores who bought
-anything, who sent a mail, or any other player's name. A mail titled `Auction expired: <name>` or
-`Auction canceled: <name>` (either spelling) is filed as a returned auction under that name, on your own Sales
-page only - it never enters the group's figures.
+the count; and, since 1.1.0, for an auction you won, the item, the count and what you paid. It also reads how many
+days the mail has left, only so it can tell the same mail apart from a new one later. It reads while the mailbox is
+open, and only because you opened it; nothing goes anywhere until you press **Sync** (on the strip, on the mail
+window itself, or `/crucible reload`). It never reads or stores who bought or sold anything, who sent a mail, or any
+other player's name. A mail titled `Auction expired: <name>` or `Auction canceled: <name>` (either spelling) is
+filed as a returned auction under that name, on your own Sales page only - it never enters the group's figures.
+Neither does anything you bought: your purchases are listed for you alone.
 
 **Take gold and items when I open a mail** (the switch on the strip, off by default): with it on, clicking a mail
 open makes one call, the game's own take of that whole mail - the same thing the game's shift-click on a mail
@@ -103,9 +105,9 @@ does - and nothing else. Never another mail, never a loop over the inbox, never 
 taken from, a GM's mail is left for you, and a mail whose attachments would not fit in your bags is not taken at
 all. The **Open All** button is the game's own; Crucible only reads what it opens.
 
-With the tray app and a membership, your own sales and returns show up in detail on the website - to you alone.
-The group only ever sees a median price and how many sold, per item, never whose. In game, the tooltip's
-`Market value` line gains a sale rate (`Market value: 16g 95s · sells ~3.2 a day`).
+With the tray app and a membership, your own sales, returns and purchases show up in detail on the website - to
+you alone. The group only ever sees a median price and how many sold, per item, never whose. In game, the
+tooltip's `Market value` line gains a sale rate (`Market value: 16g 95s · sells ~3.2 a day`).
 
 ## Your characters and your quests
 

@@ -1,5 +1,9 @@
 Crucible changelog - newest first. Features inside the notice's scope are listed here (notice version 8).
 
+1.1.0 - Your purchases: when you open your mailbox, Crucible now also notes the auctions you won - the item,
+         the count and what you paid, never who sold it. The website's Ledger lists them beside your sales and
+         returns, for your whole history, with a search. Only you see them. They follow the same switch as
+         your sales, "Record my sales and purchases" on Your PCs.
 1.0.3 - Fix: scans work again. Since Blizzard's update of 2026-11-20 the game no longer tells addons the name
          of your realm, and every scan stopped with "the client did not report a usable realm name". Crucible
          now takes the name from its own data file, which the tray app keeps up to date: the one your scans were

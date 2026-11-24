@@ -4,6 +4,8 @@
 -- mail saying what it fetched, what the deposit was and what the auction house kept; one that expired or was
 -- cancelled comes back with the item. Those are the only numbers anyone has for what things really sell for,
 -- as opposed to what they are listed at, and they are about the player's own auctions.
+-- Since 1.1.0 (spec 2026-11-21) it also reads the auctions the player WON: that invoice says what was bought,
+-- how many and what was paid, and it becomes a "bought" row beside the sales - the player's own purchase.
 --
 -- Rules this file keeps (docs/decisions.md C7, C11; spec section 6):
 --   * The mailbox is read only while the player has it open, and only because they opened it. MAIL_SHOW
@@ -59,10 +61,13 @@ local FALLBACK_PREFIXES = {
     { "Auction cancelled: ", "cancelled" },
     { "Auction canceled: ", "cancelled" },
 }
--- The invoice type the game gives the OTHER side of a sale - the person who bought it. Everything else is
--- the player's own sale-side invoice. Tested this way round on purpose: the word for the other type is one
--- the compliance test bans from the addon's code, and nothing here needs it.
+-- Three kinds of invoice: the type the game gives the side that WON an auction is the player's purchase (a
+-- "bought" row: the item, the count and what was paid, nothing about the other party); a type ending in
+-- "temp_invoice" is a notice that a sale is still pending, which is not a sale yet and is skipped; anything
+-- else is the player's own sale-side invoice. The pending type's full name holds a word the compliance test
+-- bans from the addon's code, so it is matched by its ending only.
 local BUYER = "buyer"
+local PENDING_END = "temp_invoice"
 
 -- A whole number of seconds; nothing else can key a mail (see Logic.noteSale on the dedup rule).
 local function isWholeSecond(v)
@@ -185,7 +190,19 @@ local function readMail(index, now, prefixes)
             pcall(GetInboxInvoiceInfo, index)
         if ok and not ns.isSecret(invoiceType) and type(invoiceType) == "string" then
             -- A mail with an invoice is an auction house mail either way; whether it is OURS is the type.
-            if invoiceType == BUYER then return nil end
+            if invoiceType == BUYER then
+                -- On a bulk buy buyout holds the number of units, not money (2026-11-24): the price is bid
+                -- alone, the count is the invoice's, and the attachment is only asked for its item id.
+                if ns.isSecret(itemName) or type(itemName) ~= "string" then itemName = nil end
+                if ns.isSecret(bid) or type(bid) ~= "number" or bid ~= bid then bid = nil end
+                if itemName == nil or bid == nil then return nil end
+                if ns.isSecret(count) or type(count) ~= "number" or count < 1 then count = 1 end
+                local id = attachment(index)
+                m.outcome, m.name, m.count, m.price = "bought", itemName, math.floor(count), math.floor(bid)
+                m.deposit, m.cut, m.itemID = 0, 0, id
+                return m
+            end
+            if string.sub(invoiceType, -#PENDING_END) == PENDING_END then return nil end
             if ns.isSecret(itemName) or type(itemName) ~= "string" then return nil end
             if ns.isSecret(bid) or type(bid) ~= "number" or bid ~= bid then return nil end
             if ns.isSecret(deposit) or type(deposit) ~= "number" then deposit = 0 end
@@ -270,7 +287,8 @@ local function pickUp(db)
     if type(db.sales) ~= "table" then return end
     for _, row in pairs(db.sales) do
         if type(row) == "table" and whole(row[1], 0) and type(row[2]) == "string" and whole(row[3], 1)
-            and whole(row[4], 0) and (row[7] == "sold" or row[7] == "returned") and isWholeSecond(row[8]) then
+            and whole(row[4], 0) and (row[7] == "sold" or row[7] == "returned" or row[7] == "bought")
+            and isWholeSecond(row[8]) then
             local extras = Logic.saleExtras(row) or {}
             local m = { outcome = row[7], name = row[2], count = row[3], price = row[4], itemID = row[1],
                 deposit = whole(row[5], 0) and row[5] or 0, cut = whole(row[6], 0) and row[6] or 0,

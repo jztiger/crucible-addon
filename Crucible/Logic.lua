@@ -9,14 +9,15 @@ ns = ns or {}
 local L = {}
 ns.Logic = L
 
-L.VERSION = "1.0.3"
+L.VERSION = "1.1.0"
 -- Two independent version counters, mirroring the server (src/shared/scan-schema.ts SCAN_SCHEMA_VERSION,
 -- src/shared/ref-doc.ts REF_SCHEMA_VERSION): the scan document's shape (replicate, browse) has not changed
 -- since M1, so buildDoc still tags SCAN_SCHEMA; the reference document gained items, suffixes and named
 -- recipes in M2, the member's own sales in M3, and (schema 4, review M11/M12/M19) the session's region, realm
--- and faction, a return's reason and a sale row's multiplicity - so refDoc tags SCHEMA.
+-- and faction, a return's reason and a sale row's multiplicity, and (schema 5) a won auction as a "bought"
+-- sale row - so refDoc tags SCHEMA.
 L.SCAN_SCHEMA = 1
-L.SCHEMA = 4
+L.SCHEMA = 5
 L.REPLICATE_COOLDOWN = 900
 -- What the auction house keeps of a sale, in percent. MEASURED at 5 on Forever, 2026-09-22: a sale of
 -- 2100 copper returned 2337 after a 105 copper cut (docs/research/2026-09-22-ah-cut-and-deposit.md).
@@ -61,7 +62,7 @@ L.MAX_BONUS_LINE_CHARS = 64
 -- session actually read, each carrying at most this many recipe ids.
 L.MAX_KNOWN_ROWS = 64
 L.MAX_KNOWN_RECIPE_IDS = 2000
-local OUTCOMES = { sold = true, returned = true }
+local OUTCOMES = { sold = true, returned = true, bought = true }
 -- Schema 4 (review M19): why a returned auction came back, from the mail's own subject.
 local REASONS = { expired = true, cancelled = true }
 
@@ -1470,16 +1471,16 @@ function L.refDoc(db, at, home)
     return doc
 end
 
--- -> "r4:<b64>"   (its own tag: the scan extractor on the server only ever looks for "j1:" and "end:")
+-- -> "r5:<b64>"   (its own tag: the scan extractor on the server only ever looks for "j1:" and "end:")
 function L.refTag(b64)
-    return "r4:" .. tostring(b64)
+    return "r5:" .. tostring(b64)
 end
 
--- "r4:<b64>" -> b64 ; anything else -> nil. This client only ever writes r4 now (the server still reads an
+-- "r5:<b64>" -> b64 ; anything else -> nil. This client only ever writes r5 now (the server still reads an
 -- r2 or r3 from an addon that has not updated, but Export.saveRef only ever checks its OWN tag right back).
 function L.refOf(text)
     if type(text) ~= "string" then return nil end
-    return string.match(text, "^r4:([A-Za-z0-9+/=]+)$")
+    return string.match(text, "^r5:([A-Za-z0-9+/=]+)$")
 end
 
 -- Whole numbers from one id -> value table, copied. -> the copy, how many
@@ -1988,7 +1989,7 @@ function L.questDoc(db, at, meta, charHash)
     return doc
 end
 
--- -> "q1:<b64>"   (its own tag: the server's extractors look for "j1:", "r4:" and "q1:" each on their own)
+-- -> "q1:<b64>"   (its own tag: the server's extractors look for "j1:", "r5:" and "q1:" each on their own)
 function L.questTag(b64) return "q1:" .. tostring(b64) end
 function L.questOf(text)
     if type(text) ~= "string" then return nil end
